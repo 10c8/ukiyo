@@ -337,7 +337,11 @@ impl Lexer {
                     if scanner.try_consume('|') {
                         tokens.push(Token::ExprApplicator);
                     } else {
-                        tokens.push(Token::Symbol('<'));
+                        return Err(LexError::UnexpectedChar(
+                            '<',
+                            scanner.column(),
+                            scanner.line(),
+                        ));
                     }
                 }
                 // Unknown
