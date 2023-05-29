@@ -24,6 +24,7 @@ pub enum Token {
     Symbol(char),
     RangeOperator(RangeOperator),
     AssignmentArrow,
+    ScopeBindingArrow,
     MatchArrow,
     ExprApplicator,
     Newline,
@@ -303,6 +304,20 @@ impl Lexer {
                         ));
                     }
                 }
+                // Scope Binding Arrow
+                '>' => {
+                    scanner.next();
+
+                    if scanner.try_consume('>') {
+                        tokens.push(Token::ScopeBindingArrow);
+                    } else {
+                        return Err(LexError::UnexpectedChar(
+                            '>',
+                            scanner.column(),
+                            scanner.line(),
+                        ));
+                    }
+                }
                 // Symbol / Range Operator
                 '.' => {
                     scanner.next();
@@ -484,6 +499,14 @@ this is cool!
         let mut lexer = Lexer::new("=>").expect("failed to lex input");
 
         assert_eq!(lexer.next(), Token::MatchArrow);
+        assert_eq!(lexer.next(), Token::EOF);
+    }
+
+    #[test]
+    fn test_scope_binding_arrow() {
+        let mut lexer = Lexer::new(">>").expect("failed to lex input");
+
+        assert_eq!(lexer.next(), Token::ScopeBindingArrow);
         assert_eq!(lexer.next(), Token::EOF);
     }
 
