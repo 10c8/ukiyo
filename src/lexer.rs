@@ -19,9 +19,9 @@ pub enum Token {
     Identifier(&'static str),
     Keyword(Keyword),
     String(&'static str),
+    Regex(&'static str),
     Number(usize),
     Symbol(char),
-    BinaryOperator(char),
     RangeOperator(RangeOperator),
     AssignmentArrow,
     MatchArrow,
@@ -54,6 +54,11 @@ impl Lexer {
 
         while let Some(chr) = scanner.peek() {
             match chr {
+                // Comment
+                '#' => {
+                    scanner.consume_while(|chr| *chr != '\n');
+                    scanner.next();
+                }
                 // Newline (indentation)
                 '\n' => {
                     scanner.consume_while(|chr| *chr == '\n');
@@ -118,7 +123,7 @@ impl Lexer {
                     }
                 }
                 // Whitespace
-                ' ' | '\t' => {
+                chr if chr.is_whitespace() => {
                     scanner.next();
                 }
                 // Identifier
@@ -224,19 +229,64 @@ impl Lexer {
 
                     tokens.push(Token::String(Box::leak(string.into_boxed_str())));
                 }
-                // Binary Operator
-                '+' | '*' | '/' => {
-                    tokens.push(Token::BinaryOperator(*chr));
+                // Regex
+                '/' => {
+                    let mut regex = String::new();
+
                     scanner.next();
+
+                    while let Some(chr) = scanner.peek() {
+                        match chr {
+                            '\\' => {
+                                scanner.next();
+
+                                if let Some(chr) = scanner.peek() {
+                                    match chr {
+                                        '\\' | '/' => regex.push(*chr),
+                                        'n' => regex.push('\n'),
+                                        't' => regex.push('\t'),
+                                        _ => {
+                                            return Err(LexError::UnexpectedChar(
+                                                *chr,
+                                                scanner.column(),
+                                                scanner.line(),
+                                            ))
+                                        }
+                                    }
+
+                                    scanner.next();
+                                } else {
+                                    return Err(LexError::UnexpectedEOF(
+                                        scanner.column(),
+                                        scanner.line(),
+                                    ));
+                                }
+                            }
+                            '/' => {
+                                scanner.next();
+                                break;
+                            }
+                            _ => {
+                                regex.push(*chr);
+                                scanner.next();
+                            }
+                        }
+                    }
+
+                    tokens.push(Token::Regex(Box::leak(regex.into_boxed_str())));
                 }
-                // Binary Operator / Assignment Arrow
+                // Assignment Arrow
                 '-' => {
                     scanner.next();
 
                     if scanner.try_consume('>') {
                         tokens.push(Token::AssignmentArrow);
                     } else {
-                        tokens.push(Token::BinaryOperator('-'));
+                        return Err(LexError::UnexpectedChar(
+                            '-',
+                            scanner.column(),
+                            scanner.line(),
+                        ));
                     }
                 }
                 // Match Arrow
@@ -320,6 +370,21 @@ mod tests {
     use super::*;
 
     #[test]
+    fn test_comments() {
+        let mut lexer = Lexer::new(
+            r#"# this is a comment
+test -> "test" # this is an inline comment
+# this is another comment"#,
+        )
+        .expect("failed to lex input");
+
+        assert_eq!(lexer.next(), Token::Identifier("test"));
+        assert_eq!(lexer.next(), Token::AssignmentArrow);
+        assert_eq!(lexer.next(), Token::String("test"));
+        assert_eq!(lexer.next(), Token::EOF);
+    }
+
+    #[test]
     fn test_identifier() {
         let mut lexer = Lexer::new("hello").expect("failed to lex input");
 
@@ -369,6 +434,14 @@ this is cool!
     }
 
     #[test]
+    fn test_regex() {
+        let mut lexer = Lexer::new(r#"/[a-zA-Z]+/"#).expect("failed to lex input");
+
+        assert_eq!(lexer.next(), Token::Regex("[a-zA-Z]+"));
+        assert_eq!(lexer.next(), Token::EOF);
+    }
+
+    #[test]
     fn test_number() {
         let mut lexer = Lexer::new("123").expect("failed to lex input");
 
@@ -381,17 +454,6 @@ this is cool!
         let mut lexer = Lexer::new(".").expect("failed to lex input");
 
         assert_eq!(lexer.next(), Token::Symbol('.'));
-        assert_eq!(lexer.next(), Token::EOF);
-    }
-
-    #[test]
-    fn test_binary_operator() {
-        let mut lexer = Lexer::new("+-*/").expect("failed to lex input");
-
-        assert_eq!(lexer.next(), Token::BinaryOperator('+'));
-        assert_eq!(lexer.next(), Token::BinaryOperator('-'));
-        assert_eq!(lexer.next(), Token::BinaryOperator('*'));
-        assert_eq!(lexer.next(), Token::BinaryOperator('/'));
         assert_eq!(lexer.next(), Token::EOF);
     }
 
