@@ -180,8 +180,48 @@ impl Lexer {
 
                     if is_multiline {
                         while let Some(_) = scanner.peek() {
-                            if scanner.try_consume_sequence("\n\"\"\"") {
-                                break;
+                            if scanner.try_consume('\n') {
+                                let mut spaces = 0;
+                                let mut indent = 0;
+
+                                let last_indent = *indent_stack.last().unwrap_or(&0);
+
+                                if last_indent > 0 {
+                                    while let Some(chr) = scanner.peek() {
+                                        if *chr == ' ' {
+                                            spaces += 1;
+                                            scanner.next();
+                                        } else {
+                                            break;
+                                        }
+                                    }
+
+                                    if spaces % tab_size != 0 {
+                                        return Err(LexError::UnexpectedIndent(
+                                            spaces,
+                                            scanner.line(),
+                                            scanner.column(),
+                                        ));
+                                    }
+
+                                    indent = spaces / tab_size;
+                                }
+
+                                if scanner.try_consume_sequence("\"\"\"") {
+                                    if tab_size > 0 {
+                                        if indent != last_indent {
+                                            return Err(LexError::UnexpectedIndent(
+                                                spaces,
+                                                scanner.line(),
+                                                scanner.column(),
+                                            ));
+                                        }
+                                    }
+
+                                    break;
+                                } else {
+                                    string.push('\n');
+                                }
                             } else {
                                 string.push(*scanner.next().unwrap());
                             }
