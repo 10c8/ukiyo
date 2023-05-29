@@ -124,6 +124,7 @@ mod tests {
         assert_eq!(scanner.column(), 1);
         assert_eq!(scanner.line(), 1);
 
+        assert_eq!(scanner.peek(), Some(&'a'));
         assert_eq!(scanner.next(), Some(&'a'));
         assert_eq!(scanner.column(), 2);
         assert_eq!(scanner.line(), 1);
@@ -140,6 +141,7 @@ mod tests {
         assert_eq!(scanner.column(), 1);
         assert_eq!(scanner.line(), 2);
 
+        assert_eq!(scanner.peek(), Some(&'d'));
         assert_eq!(scanner.next(), Some(&'d'));
         assert_eq!(scanner.column(), 2);
         assert_eq!(scanner.line(), 2);
