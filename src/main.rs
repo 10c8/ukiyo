@@ -1,4 +1,5 @@
 mod lexer;
+mod parser;
 mod scanner;
 
 fn main() {
@@ -49,16 +50,28 @@ The following is a character profile for an RPG game in JSON format:
 """
 "#;
 
-    let mut lexer = lexer::Lexer::new(input).expect("failed to lex input");
+    let example = r#"
+age -> gen "hello" 1.0 <| test 0.5 <| int <| stop ","
+"#;
 
-    println!("---\nTokens:");
+    let mut lexer = lexer::Lexer::new(example);
+    lexer.lex().expect("failed to lex input");
 
+    println!("--- Tokens:");
+
+    let mut lexer_copy = lexer.clone();
     loop {
-        let token = lexer.next();
+        let token = lexer_copy.next();
         println!("{:?}", token);
 
         if token == lexer::Token::EOF {
             break;
         }
     }
+
+    let mut parser = parser::Parser::new(lexer);
+    let ast = parser.parse().expect("failed to parse input");
+
+    println!("\n--- AST:");
+    println!("{:#?}", ast);
 }

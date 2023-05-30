@@ -1,4 +1,5 @@
 pub mod lexer;
+pub mod parser;
 pub mod scanner;
 
 use pyo3::prelude::*;

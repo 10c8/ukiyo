@@ -20,13 +20,13 @@ pub enum Token {
     Keyword(Keyword),
     String(&'static str),
     Regex(&'static str),
-    Number(usize),
+    Number(u64),
     Symbol(char),
     RangeOperator(RangeOperator),
     AssignmentArrow,
     ScopeBindingArrow,
     MatchArrow,
-    ExprApplicator,
+    ApplicationArrow,
     Newline,
     Indent(usize),
     Dedent(usize),
@@ -41,35 +41,43 @@ pub enum LexError {
     NumberOverflow(usize, usize),
 }
 
+#[derive(Clone)]
 pub struct Lexer {
+    scanner: Scanner,
     tokens: Vec<Token>,
 }
 
 impl Lexer {
-    pub fn new(input: &str) -> Result<Self, LexError> {
-        let mut scanner = Scanner::new(input);
+    pub fn new(input: &str) -> Self {
+        let scanner = Scanner::new(input);
+        let tokens = Vec::new();
+
+        Self { scanner, tokens }
+    }
+
+    pub fn lex(&mut self) -> Result<(), LexError> {
         let mut tokens = Vec::new();
 
         let mut indent_stack = Vec::new();
         let mut tab_size = 0;
 
-        while let Some(chr) = scanner.peek() {
+        while let Some(chr) = self.scanner.peek() {
             match chr {
                 // Comment
                 '#' => {
-                    scanner.consume_while(|chr| *chr != '\n');
-                    scanner.next();
+                    self.scanner.consume_while(|chr| *chr != '\n');
+                    self.scanner.next();
                 }
                 // Newline (indentation)
                 '\n' => {
-                    scanner.consume_while(|chr| *chr == '\n');
+                    self.scanner.consume_while(|chr| *chr == '\n');
 
                     let mut spaces = 0;
 
-                    while let Some(chr) = scanner.peek() {
+                    while let Some(chr) = self.scanner.peek() {
                         if *chr == ' ' {
                             spaces += 1;
-                            scanner.next();
+                            self.scanner.next();
                         } else {
                             break;
                         }
@@ -80,8 +88,8 @@ impl Lexer {
                     } else if spaces % tab_size != 0 {
                         return Err(LexError::UnexpectedIndent(
                             spaces,
-                            scanner.line(),
-                            scanner.column(),
+                            self.scanner.line(),
+                            self.scanner.column(),
                         ));
                     }
 
@@ -104,8 +112,8 @@ impl Lexer {
                     if indent > last_indent + 1 {
                         return Err(LexError::UnexpectedIndent(
                             spaces,
-                            scanner.line(),
-                            scanner.column(),
+                            self.scanner.line(),
+                            self.scanner.column(),
                         ));
                     } else if indent > last_indent {
                         indent_stack.push(indent);
@@ -125,19 +133,19 @@ impl Lexer {
                 }
                 // Whitespace
                 chr if chr.is_whitespace() => {
-                    scanner.next();
+                    self.scanner.next();
                 }
                 // Identifier
                 chr if chr.is_ascii_lowercase() || *chr == '_' => {
                     let mut identifier = String::new();
 
                     identifier.push(*chr);
-                    scanner.next();
+                    self.scanner.next();
 
-                    while let Some(chr) = scanner.peek() {
+                    while let Some(chr) = self.scanner.peek() {
                         if chr.is_ascii_lowercase() || *chr == '_' {
                             identifier.push(*chr);
-                            scanner.next();
+                            self.scanner.next();
                         } else {
                             break;
                         }
@@ -157,40 +165,40 @@ impl Lexer {
                     let mut number = String::new();
 
                     number.push(*num);
-                    scanner.next();
+                    self.scanner.next();
 
-                    while let Some(chr) = scanner.peek() {
+                    while let Some(chr) = self.scanner.peek() {
                         if chr.is_digit(10) {
                             number.push(*chr);
-                            scanner.next();
+                            self.scanner.next();
                         } else {
                             break;
                         }
                     }
 
-                    let number = number
-                        .parse::<usize>()
-                        .map_err(|_| LexError::NumberOverflow(scanner.column(), scanner.line()))?;
+                    let number = number.parse::<u64>().map_err(|_| {
+                        LexError::NumberOverflow(self.scanner.column(), self.scanner.line())
+                    })?;
                     tokens.push(Token::Number(number));
                 }
                 // String
                 '"' => {
                     let mut string = String::new();
-                    let is_multiline = scanner.try_consume_sequence("\"\"\"\n");
+                    let is_multiline = self.scanner.try_consume_sequence("\"\"\"\n");
 
                     if is_multiline {
-                        while let Some(_) = scanner.peek() {
-                            if scanner.try_consume('\n') {
+                        while let Some(_) = self.scanner.peek() {
+                            if self.scanner.try_consume('\n') {
                                 let mut spaces = 0;
                                 let mut indent = 0;
 
                                 let last_indent = *indent_stack.last().unwrap_or(&0);
 
                                 if last_indent > 0 {
-                                    while let Some(chr) = scanner.peek() {
+                                    while let Some(chr) = self.scanner.peek() {
                                         if *chr == ' ' {
                                             spaces += 1;
-                                            scanner.next();
+                                            self.scanner.next();
                                         } else {
                                             break;
                                         }
@@ -199,21 +207,21 @@ impl Lexer {
                                     if spaces % tab_size != 0 {
                                         return Err(LexError::UnexpectedIndent(
                                             spaces,
-                                            scanner.line(),
-                                            scanner.column(),
+                                            self.scanner.line(),
+                                            self.scanner.column(),
                                         ));
                                     }
 
                                     indent = spaces / tab_size;
                                 }
 
-                                if scanner.try_consume_sequence("\"\"\"") {
+                                if self.scanner.try_consume_sequence("\"\"\"") {
                                     if tab_size > 0 {
                                         if indent != last_indent {
                                             return Err(LexError::UnexpectedIndent(
                                                 spaces,
-                                                scanner.line(),
-                                                scanner.column(),
+                                                self.scanner.line(),
+                                                self.scanner.column(),
                                             ));
                                         }
                                     }
@@ -223,18 +231,18 @@ impl Lexer {
                                     string.push('\n');
                                 }
                             } else {
-                                string.push(*scanner.next().unwrap());
+                                string.push(*self.scanner.next().unwrap());
                             }
                         }
                     } else {
-                        scanner.next();
+                        self.scanner.next();
 
-                        while let Some(chr) = scanner.peek() {
+                        while let Some(chr) = self.scanner.peek() {
                             match chr {
                                 '\\' => {
-                                    scanner.next();
+                                    self.scanner.next();
 
-                                    if let Some(chr) = scanner.peek() {
+                                    if let Some(chr) = self.scanner.peek() {
                                         match chr {
                                             '\\' | '"' => string.push(*chr),
                                             'n' => string.push('\n'),
@@ -242,27 +250,27 @@ impl Lexer {
                                             _ => {
                                                 return Err(LexError::UnexpectedChar(
                                                     *chr,
-                                                    scanner.column(),
-                                                    scanner.line(),
+                                                    self.scanner.column(),
+                                                    self.scanner.line(),
                                                 ))
                                             }
                                         }
 
-                                        scanner.next();
+                                        self.scanner.next();
                                     } else {
                                         return Err(LexError::UnexpectedEOF(
-                                            scanner.column(),
-                                            scanner.line(),
+                                            self.scanner.column(),
+                                            self.scanner.line(),
                                         ));
                                     }
                                 }
                                 '"' => {
-                                    scanner.next();
+                                    self.scanner.next();
                                     break;
                                 }
                                 _ => {
                                     string.push(*chr);
-                                    scanner.next();
+                                    self.scanner.next();
                                 }
                             }
                         }
@@ -274,14 +282,14 @@ impl Lexer {
                 '/' => {
                     let mut regex = String::new();
 
-                    scanner.next();
+                    self.scanner.next();
 
-                    while let Some(chr) = scanner.peek() {
+                    while let Some(chr) = self.scanner.peek() {
                         match chr {
                             '\\' => {
-                                scanner.next();
+                                self.scanner.next();
 
-                                if let Some(chr) = scanner.peek() {
+                                if let Some(chr) = self.scanner.peek() {
                                     match chr {
                                         '\\' | '/' => regex.push(*chr),
                                         'n' => regex.push('\n'),
@@ -289,27 +297,27 @@ impl Lexer {
                                         _ => {
                                             return Err(LexError::UnexpectedChar(
                                                 *chr,
-                                                scanner.column(),
-                                                scanner.line(),
+                                                self.scanner.column(),
+                                                self.scanner.line(),
                                             ))
                                         }
                                     }
 
-                                    scanner.next();
+                                    self.scanner.next();
                                 } else {
                                     return Err(LexError::UnexpectedEOF(
-                                        scanner.column(),
-                                        scanner.line(),
+                                        self.scanner.column(),
+                                        self.scanner.line(),
                                     ));
                                 }
                             }
                             '/' => {
-                                scanner.next();
+                                self.scanner.next();
                                 break;
                             }
                             _ => {
                                 regex.push(*chr);
-                                scanner.next();
+                                self.scanner.next();
                             }
                         }
                     }
@@ -318,66 +326,66 @@ impl Lexer {
                 }
                 // Assignment Arrow
                 '-' => {
-                    scanner.next();
+                    self.scanner.next();
 
-                    if scanner.try_consume('>') {
+                    if self.scanner.try_consume('>') {
                         tokens.push(Token::AssignmentArrow);
                     } else {
                         return Err(LexError::UnexpectedChar(
                             '-',
-                            scanner.column(),
-                            scanner.line(),
+                            self.scanner.column(),
+                            self.scanner.line(),
                         ));
                     }
                 }
                 // Match Arrow
                 '=' => {
-                    scanner.next();
+                    self.scanner.next();
 
-                    if scanner.try_consume('>') {
+                    if self.scanner.try_consume('>') {
                         tokens.push(Token::MatchArrow);
                     } else {
                         return Err(LexError::UnexpectedChar(
                             '=',
-                            scanner.column(),
-                            scanner.line(),
+                            self.scanner.column(),
+                            self.scanner.line(),
                         ));
                     }
                 }
                 // Scope Binding Arrow
                 '>' => {
-                    scanner.next();
+                    self.scanner.next();
 
-                    if scanner.try_consume('>') {
+                    if self.scanner.try_consume('>') {
                         tokens.push(Token::ScopeBindingArrow);
                     } else {
                         return Err(LexError::UnexpectedChar(
                             '>',
-                            scanner.column(),
-                            scanner.line(),
+                            self.scanner.column(),
+                            self.scanner.line(),
                         ));
                     }
                 }
                 // Symbol / Range Operator
                 '.' => {
-                    scanner.next();
+                    self.scanner.next();
 
-                    if scanner.try_consume('.') {
-                        if scanner.try_consume('=') {
+                    if self.scanner.try_consume('.') {
+                        if self.scanner.try_consume('=') {
                             tokens.push(Token::RangeOperator(RangeOperator::Inclusive));
-                        } else if scanner.try_consume('<') {
+                        } else if self.scanner.try_consume('<') {
                             tokens.push(Token::RangeOperator(RangeOperator::Exclusive));
                         } else {
-                            if let Some(invalid) = scanner.peek() {
+                            if let Some(invalid) = self.scanner.peek() {
                                 return Err(LexError::UnexpectedChar(
                                     *invalid,
-                                    scanner.column(),
-                                    scanner.line(),
+                                    self.scanner.column(),
+                                    self.scanner.line(),
                                 ));
                             } else {
                                 return Err(LexError::UnexpectedEOF(
-                                    scanner.column(),
-                                    scanner.line(),
+                                    self.scanner.column(),
+                                    self.scanner.line(),
                                 ));
                             }
                         }
@@ -387,15 +395,15 @@ impl Lexer {
                 }
                 // Expression Applicator
                 '<' => {
-                    scanner.next();
+                    self.scanner.next();
 
-                    if scanner.try_consume('|') {
-                        tokens.push(Token::ExprApplicator);
+                    if self.scanner.try_consume('|') {
+                        tokens.push(Token::ApplicationArrow);
                     } else {
                         return Err(LexError::UnexpectedChar(
                             '<',
-                            scanner.column(),
-                            scanner.line(),
+                            self.scanner.column(),
+                            self.scanner.line(),
                         ));
                     }
                 }
@@ -403,8 +411,8 @@ impl Lexer {
                 _ => {
                     return Err(LexError::UnexpectedChar(
                         *chr,
-                        scanner.column(),
-                        scanner.line(),
+                        self.scanner.column(),
+                        self.scanner.line(),
                     ));
                 }
             };
@@ -412,7 +420,13 @@ impl Lexer {
 
         tokens.reverse();
 
-        Ok(Lexer { tokens })
+        self.tokens = tokens;
+
+        Ok(())
+    }
+
+    pub fn cursor(&self) -> usize {
+        self.tokens.len()
     }
 
     pub fn peek(&mut self) -> Token {
@@ -434,8 +448,8 @@ mod tests {
             r#"# this is a comment
 test -> "test" # this is an inline comment
 # this is another comment"#,
-        )
-        .expect("failed to lex input");
+        );
+        lexer.lex().expect("failed to lex input");
 
         assert_eq!(lexer.next(), Token::Identifier("test"));
         assert_eq!(lexer.next(), Token::AssignmentArrow);
@@ -445,7 +459,8 @@ test -> "test" # this is an inline comment
 
     #[test]
     fn test_identifier() {
-        let mut lexer = Lexer::new("hello").expect("failed to lex input");
+        let mut lexer = Lexer::new("hello");
+        lexer.lex().expect("failed to lex input");
 
         assert_eq!(lexer.next(), Token::Identifier("hello"));
         assert_eq!(lexer.next(), Token::EOF);
@@ -453,7 +468,8 @@ test -> "test" # this is an inline comment
 
     #[test]
     fn test_keyword() {
-        let mut lexer = Lexer::new("case").expect("failed to lex input");
+        let mut lexer = Lexer::new("case");
+        lexer.lex().expect("failed to lex input");
 
         assert_eq!(lexer.next(), Token::Keyword(Keyword::Case));
         assert_eq!(lexer.next(), Token::EOF);
@@ -461,7 +477,8 @@ test -> "test" # this is an inline comment
 
     #[test]
     fn test_string() {
-        let mut lexer = Lexer::new(r#""hello world\n""#).expect("failed to lex input");
+        let mut lexer = Lexer::new(r#""hello world\n""#);
+        lexer.lex().expect("failed to lex input");
 
         assert_eq!(lexer.next(), Token::String("hello world\n"));
         assert_eq!(lexer.next(), Token::EOF);
@@ -469,7 +486,8 @@ test -> "test" # this is an inline comment
 
     #[test]
     fn test_escaped_string() {
-        let mut lexer = Lexer::new(r#""hello \"world\"\n"#).expect("failed to lex input");
+        let mut lexer = Lexer::new(r#""hello \"world\"\n"#);
+        lexer.lex().expect("failed to lex input");
 
         assert_eq!(lexer.next(), Token::String("hello \"world\"\n"));
         assert_eq!(lexer.next(), Token::EOF);
@@ -482,8 +500,8 @@ test -> "test" # this is an inline comment
 hello "world"
 this is cool!
 """"#,
-        )
-        .expect("failed to lex input");
+        );
+        lexer.lex().expect("failed to lex input");
 
         assert_eq!(
             lexer.next(),
@@ -494,7 +512,8 @@ this is cool!
 
     #[test]
     fn test_regex() {
-        let mut lexer = Lexer::new(r#"/[a-zA-Z]+/"#).expect("failed to lex input");
+        let mut lexer = Lexer::new(r#"/[a-zA-Z]+/"#);
+        lexer.lex().expect("failed to lex input");
 
         assert_eq!(lexer.next(), Token::Regex("[a-zA-Z]+"));
         assert_eq!(lexer.next(), Token::EOF);
@@ -502,7 +521,8 @@ this is cool!
 
     #[test]
     fn test_number() {
-        let mut lexer = Lexer::new("123").expect("failed to lex input");
+        let mut lexer = Lexer::new("123");
+        lexer.lex().expect("failed to lex input");
 
         assert_eq!(lexer.next(), Token::Number(123));
         assert_eq!(lexer.next(), Token::EOF);
@@ -510,7 +530,8 @@ this is cool!
 
     #[test]
     fn test_symbol() {
-        let mut lexer = Lexer::new(".").expect("failed to lex input");
+        let mut lexer = Lexer::new(".");
+        lexer.lex().expect("failed to lex input");
 
         assert_eq!(lexer.next(), Token::Symbol('.'));
         assert_eq!(lexer.next(), Token::EOF);
@@ -518,7 +539,8 @@ this is cool!
 
     #[test]
     fn test_range() {
-        let mut lexer = Lexer::new("0..=5").expect("failed to lex input");
+        let mut lexer = Lexer::new("0..=5");
+        lexer.lex().expect("failed to lex input");
 
         assert_eq!(lexer.next(), Token::Number(0));
         assert_eq!(lexer.next(), Token::RangeOperator(RangeOperator::Inclusive));
@@ -528,7 +550,8 @@ this is cool!
 
     #[test]
     fn test_assignment_arrow() {
-        let mut lexer = Lexer::new("->").expect("failed to lex input");
+        let mut lexer = Lexer::new("->");
+        lexer.lex().expect("failed to lex input");
 
         assert_eq!(lexer.next(), Token::AssignmentArrow);
         assert_eq!(lexer.next(), Token::EOF);
@@ -536,7 +559,8 @@ this is cool!
 
     #[test]
     fn test_match_arrow() {
-        let mut lexer = Lexer::new("=>").expect("failed to lex input");
+        let mut lexer = Lexer::new("=>");
+        lexer.lex().expect("failed to lex input");
 
         assert_eq!(lexer.next(), Token::MatchArrow);
         assert_eq!(lexer.next(), Token::EOF);
@@ -544,7 +568,8 @@ this is cool!
 
     #[test]
     fn test_scope_binding_arrow() {
-        let mut lexer = Lexer::new(">>").expect("failed to lex input");
+        let mut lexer = Lexer::new(">>");
+        lexer.lex().expect("failed to lex input");
 
         assert_eq!(lexer.next(), Token::ScopeBindingArrow);
         assert_eq!(lexer.next(), Token::EOF);
@@ -552,15 +577,17 @@ this is cool!
 
     #[test]
     fn test_expr_applicator() {
-        let mut lexer = Lexer::new("<|").expect("failed to lex input");
+        let mut lexer = Lexer::new("<|");
+        lexer.lex().expect("failed to lex input");
 
-        assert_eq!(lexer.next(), Token::ExprApplicator);
+        assert_eq!(lexer.next(), Token::ApplicationArrow);
         assert_eq!(lexer.next(), Token::EOF);
     }
 
     #[test]
     fn test_newline() {
-        let mut lexer = Lexer::new("\ntest\n\n\ntest").expect("failed to lex input");
+        let mut lexer = Lexer::new("\ntest\n\n\ntest");
+        lexer.lex().expect("failed to lex input");
 
         assert_eq!(lexer.next(), Token::Newline);
         assert_eq!(lexer.next(), Token::Identifier("test"));
@@ -571,8 +598,8 @@ this is cool!
 
     #[test]
     fn test_indentation() {
-        let mut lexer = Lexer::new("zero\n  one\n    two\n\n  one\n\n\n  one\nzero")
-            .expect("failed to lex input");
+        let mut lexer = Lexer::new("zero\n  one\n    two\n\n  one\n\n\n  one\nzero");
+        lexer.lex().expect("failed to lex input");
 
         assert_eq!(lexer.next(), Token::Identifier("zero"));
         assert_eq!(lexer.next(), Token::Indent(1));
