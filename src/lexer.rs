@@ -71,7 +71,7 @@ impl Lexer {
                 // Comment
                 '#' => {
                     self.scanner.consume_while(|chr| *chr != '\n');
-                    self.scanner.next();
+                    self.scanner.consume_while(|chr| *chr == '\n');
                 }
                 // Newline (indentation)
                 '\n' => {
