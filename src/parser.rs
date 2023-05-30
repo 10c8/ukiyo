@@ -32,18 +32,18 @@ pub enum Node {
         right: Box<Node>,
     },
     Case {
-        target: Box<Node>,
+        term: Box<Node>,
         children: Vec<Node>,
     },
     CaseBlock {
         children: Vec<Node>,
     },
-    CaseMatch {
-        left: Box<Node>,
-        right: Box<Node>,
+    CaseBranch {
+        pattern: Box<Node>,
+        result: Box<Node>,
     },
     Each {
-        target: Box<Node>,
+        term: Box<Node>,
         children: Vec<Node>,
     },
     Identifier(&'static str),
@@ -59,11 +59,17 @@ pub enum Node {
 
 pub struct Parser {
     lexer: Lexer,
+    indent_stack: Vec<usize>,
 }
 
 impl Parser {
     pub fn new(lexer: Lexer) -> Self {
-        Parser { lexer }
+        let indent_stack = Vec::new();
+
+        Parser {
+            lexer,
+            indent_stack,
+        }
     }
 
     pub fn parse(&mut self) -> Result<Node, ParseError> {
@@ -95,6 +101,26 @@ impl Parser {
         }
     }
 
+    /// Consumes the next token if it is a valid indent and updates the indent stack.
+    /// Otherwise, returns an error.
+    fn require_indent(&mut self) -> Result<(), ParseError> {
+        let last_indent = self.indent_stack.last().unwrap_or(&0).clone();
+        self.require(Token::Indent(last_indent + 1))?;
+
+        self.indent_stack.push(last_indent + 1);
+
+        Ok(())
+    }
+
+    /// Consumes the next token if it is a valid dedent and updates the indent stack.
+    /// Otherwise, returns an error.
+    fn require_dedent(&mut self) -> Result<(), ParseError> {
+        let last_indent = self.indent_stack.pop().unwrap_or(0);
+        self.require(Token::Dedent(last_indent))?;
+
+        Ok(())
+    }
+
     // Node parsers
     fn program(&mut self) -> Result<Node, ParseError> {
         // program = SOI '\n'* stmt* EOI
@@ -115,7 +141,7 @@ impl Parser {
     }
 
     fn statement(&mut self) -> Result<Node, ParseError> {
-        // stmt = exprdef | case | each | term
+        // stmt = expr_def | term
 
         let result = match self.lexer.peek() {
             Token::Identifier(_) => match self.expression_definition() {
@@ -123,8 +149,6 @@ impl Parser {
                 Err(_) => self.term()?,
             },
             Token::String(_) | Token::Number(_) => self.term()?,
-            Token::Keyword(Keyword::Case) => todo!(), // self.case()?,
-            Token::Keyword(Keyword::Each) => todo!(), // self.each()?,
             _ => {
                 return Err(ParseError::UnexpectedToken(
                     "statement",
@@ -138,25 +162,29 @@ impl Parser {
     }
 
     fn expression_definition(&mut self) -> Result<Node, ParseError> {
-        // exprdef = identifier '->' expr
+        // exprdef = identifier '->' (expr | case | each | block)
 
-        let name = match self.lexer.peek() {
-            Token::Identifier(name) => {
-                self.lexer.next();
-                name
-            }
-            _ => {
-                return Err(ParseError::UnexpectedToken(
-                    "exprdef",
-                    Token::EOF,
-                    self.lexer.cursor(),
-                ))
-            }
+        let name = match self.lexer.next() {
+            Token::Identifier(name) => name,
+            _ => unreachable!("expr_def must start with an identifier"),
         };
 
         self.require(Token::AssignmentArrow)?;
 
-        let expression = self.expression()?;
+        let expression = match self.lexer.peek() {
+            Token::Identifier(_) => self.expression()?,
+            Token::String(_) | Token::Number(_) => self.term()?,
+            Token::Keyword(Keyword::Case) => self.case()?,
+            Token::Keyword(Keyword::Each) => todo!(), // self.each()?,
+            Token::Indent(_) => todo!(),              // self.block()?,
+            _ => {
+                return Err(ParseError::UnexpectedToken(
+                    "expr_def",
+                    self.lexer.peek(),
+                    self.lexer.cursor(),
+                ))
+            }
+        };
 
         Ok(Node::ExpressionDefinition {
             name: name.to_string(),
@@ -166,7 +194,9 @@ impl Parser {
 
     fn expression(&mut self) -> Result<Node, ParseError> {
         // expr = term expr_tail
-        // expr_tail = ('<|' expr | ident term*)*
+        // expr_tail = (expr_apl | expr_call)*
+        // expr_apl = '<|' expr
+        // expr_call = ident term*
 
         let left = self.term()?;
 
@@ -267,6 +297,46 @@ impl Parser {
         };
 
         Ok(result)
+    }
+
+    fn case(&mut self) -> Result<Node, ParseError> {
+        // case = 'case' term 'of' case_body
+        // case_body = INDENT term '=>' term (NEWLINE term '=>' term)* DEDENT
+
+        self.require(Token::Keyword(Keyword::Case))?;
+
+        let term = self.term()?;
+
+        self.require(Token::Keyword(Keyword::Of))?;
+
+        self.require_indent()?;
+
+        let mut children = Vec::new();
+
+        loop {
+            let pattern = self.term()?;
+
+            self.require(Token::MatchArrow)?;
+
+            let result = self.term()?;
+
+            children.push(Node::CaseBranch {
+                pattern: Box::new(pattern),
+                result: Box::new(result),
+            });
+
+            if self.lexer.peek() == Token::Newline {
+                self.lexer.next();
+            } else {
+                self.require_dedent()?;
+                break;
+            }
+        }
+
+        Ok(Node::Case {
+            term: Box::new(term),
+            children,
+        })
     }
 
     fn range(&mut self) -> Result<Node, ParseError> {

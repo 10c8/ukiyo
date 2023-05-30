@@ -4,7 +4,7 @@ mod scanner;
 
 fn main() {
     let input = r#"
-int -> re /[0-9]+/
+# int -> re /[0-9]+/
 
 name -> gen
 age -> gen <| int <| stop ","
@@ -15,7 +15,7 @@ strength -> gen <| int <| stop ","
 armor -> take valid_armor
 weapon -> take valid_weapon
 
-items -> gen <| temp 0.7 <| rep 3 >> join it ",\n"
+items -> gen <| temp 0.7 <| rep 3 # >> join it ",\n"
 
 examples ->
   each example_list
@@ -28,7 +28,7 @@ examples ->
     Reasoning: ${it.reasoning}
     Anachronism: ${it.answer}
     """
-  >> join "\n\n"
+  # >> join "\n\n"
 
 """
 The following is a character profile for an RPG game in JSON format:
@@ -51,7 +51,15 @@ The following is a character profile for an RPG game in JSON format:
 "#;
 
     let example = r#"
-age -> gen "hello" 1.0 <| test 0.5 <| int <| stop ","
+color -> case it of
+  "apple"  => "red"
+  "banana" => "yellow"
+  "orange" => "orange"
+  _ => "unknown"
+
+apple_color -> color "apple"
+
+"Apples are ${apple_color}!"
 "#;
 
     let mut lexer = lexer::Lexer::new(example);
