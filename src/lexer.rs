@@ -16,17 +16,17 @@ pub enum RangeOperator {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Token {
-    Identifier(&'static str),
-    Keyword(Keyword),
-    String(&'static str),
-    Regex(&'static str),
-    Number(u64),
-    Symbol(char),
-    RangeOperator(RangeOperator),
-    AssignmentArrow,
-    ScopeBindingArrow,
-    MatchArrow,
-    ApplicationArrow,
+    Identifier(&'static str),     // [a-z_]+
+    Keyword(Keyword),             // case | do | each | of
+    String(&'static str),         // "[^"]*"
+    Regex(&'static str),          // /[^/]+/
+    Number(u64),                  // [0-9]+
+    Symbol(char),                 // '.' | '(' | ')'
+    RangeOperator(RangeOperator), // "..=" | "..<"
+    AssignmentArrow,              // ->
+    BindingArrow,                 // >>
+    MatchArrow,                   // =>
+    ApplicationArrow,             // <|
     Newline,
     Indent(usize),
     Dedent(usize),
@@ -138,7 +138,7 @@ impl Lexer {
                 }
                 // Whitespace
                 chr if chr.is_whitespace() => {
-                    self.scanner.next();
+                    self.scanner.consume_while(|chr| chr.is_whitespace());
                 }
                 // Identifier
                 chr if chr.is_ascii_lowercase() || *chr == '_' => {
@@ -337,7 +337,7 @@ impl Lexer {
                         tokens.push(Token::AssignmentArrow);
                     } else {
                         return Err(LexError::UnexpectedChar(
-                            '-',
+                            *self.scanner.peek().unwrap(),
                             self.scanner.column(),
                             self.scanner.line(),
                         ));
@@ -351,7 +351,7 @@ impl Lexer {
                         tokens.push(Token::MatchArrow);
                     } else {
                         return Err(LexError::UnexpectedChar(
-                            '=',
+                            *self.scanner.peek().unwrap(),
                             self.scanner.column(),
                             self.scanner.line(),
                         ));
@@ -362,14 +362,18 @@ impl Lexer {
                     self.scanner.next();
 
                     if self.scanner.try_consume('>') {
-                        tokens.push(Token::ScopeBindingArrow);
+                        tokens.push(Token::BindingArrow);
                     } else {
                         return Err(LexError::UnexpectedChar(
-                            '>',
+                            *self.scanner.peek().unwrap(),
                             self.scanner.column(),
                             self.scanner.line(),
                         ));
                     }
+                }
+                // Symbol
+                '(' | ')' => {
+                    tokens.push(Token::Symbol(*self.scanner.next().unwrap()));
                 }
                 // Symbol / Range Operator
                 '.' => {
@@ -406,7 +410,7 @@ impl Lexer {
                         tokens.push(Token::ApplicationArrow);
                     } else {
                         return Err(LexError::UnexpectedChar(
-                            '<',
+                            *self.scanner.peek().unwrap(),
                             self.scanner.column(),
                             self.scanner.line(),
                         ));
@@ -585,7 +589,7 @@ this is cool!
         let mut lexer = Lexer::new(">>");
         lexer.lex().expect("failed to lex input");
 
-        assert_eq!(lexer.next(), Token::ScopeBindingArrow);
+        assert_eq!(lexer.next(), Token::BindingArrow);
         assert_eq!(lexer.next(), Token::EOF);
     }
 
