@@ -23,6 +23,10 @@ colors ->
 "Apples are ${apple_color}!"
 "#;
 
+    let test = r#"
+colors -> each fruits do write <| test "${it} is delicious!"
+"#;
+
     let mut lexer = lexer::Lexer::new(example);
     lexer.lex().expect("failed to lex input");
 

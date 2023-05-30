@@ -5,6 +5,7 @@ pub enum ParseError {
     UnexpectedToken(&'static str, Token, usize),
     NumberParseError(String, usize),
     EmptyBlock(usize),
+    EmptyCase(usize),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -36,7 +37,7 @@ pub enum Node {
         children: Vec<Node>,
     },
     CaseBranch {
-        pattern: Box<Node>,
+        pattern: Option<Box<Node>>,
         result: Box<Node>,
     },
     Each {
@@ -72,7 +73,7 @@ impl Parser {
         }
     }
 
-    pub fn parse(&mut self) -> Result<Node, ParseError> {
+    pub fn parse(&mut self) -> Result<Vec<Node>, ParseError> {
         let program = self.program()?;
 
         if self.lexer.peek() != Token::EOF {
@@ -83,7 +84,10 @@ impl Parser {
             ));
         }
 
-        Ok(program)
+        match program {
+            Node::Program { children } => Ok(children),
+            _ => unreachable!(),
+        }
     }
 
     /// If the next token if it matches `token`, consumes it if `consume` is true.
@@ -160,14 +164,27 @@ impl Parser {
     }
 
     fn statement(&mut self) -> Result<Node, ParseError> {
-        // stmt = expr_def | term
+        // stmt = expr_def | expr_call | string | number
 
         let result = match self.lexer.peek() {
             Token::Identifier(_) => match self.expression_definition() {
                 Ok(node) => node,
                 Err(_) => {
                     self.lexer.backtrack();
-                    self.term()?
+
+                    let name = match self.term() {
+                        Ok(Node::Identifier(name)) => name.to_string(),
+                        _ => {
+                            return Err(ParseError::UnexpectedToken(
+                                "statement",
+                                self.lexer.peek(),
+                                self.lexer.cursor(),
+                            ))
+                        }
+                    };
+                    let arguments = self.expression_call_arguments().unwrap_or(Vec::new());
+
+                    Node::ExpressionCall { name, arguments }
                 }
             },
             Token::String(_) | Token::Number(_) => self.term()?,
@@ -223,14 +240,40 @@ impl Parser {
         })
     }
 
+    fn expression_call_arguments(&mut self) -> Result<Vec<Node>, ParseError> {
+        // expr_call = ident term*
+
+        match self.lexer.peek() {
+            Token::Identifier(_) | Token::String(_) | Token::Number(_) => {
+                let mut arguments = Vec::new();
+
+                loop {
+                    match self.lexer.peek() {
+                        Token::Identifier(_) | Token::String(_) | Token::Number(_) => {
+                            arguments.push(self.term()?)
+                        }
+                        _ => break,
+                    }
+                }
+
+                return Ok(arguments);
+            }
+            _ => {
+                return Err(ParseError::UnexpectedToken(
+                    "expr_call",
+                    self.lexer.peek(),
+                    self.lexer.cursor(),
+                ))
+            }
+        };
+    }
+
     fn expression(&mut self, precedence: Option<usize>) -> Result<Node, ParseError> {
-        // expr = '('? term expr_tail ')'?
+        // expr = '('? ident expr_tail ')'?
         // expr_tail = (expr_apl | scope_binding | expr_call)*
         // expr_apl = '<|' expr
         // scope_binding = '>>' expr
-        // expr_call = ident term*
-
-        println!("expr peek: {:?}", self.lexer.peek());
+        // expr_call = term*
 
         let precedence = precedence.unwrap_or(0);
         let mut is_parens = false;
@@ -240,9 +283,15 @@ impl Parser {
             self.lexer.next();
         }
 
-        let left = self.term()?;
+        let left = self.identifier()?;
 
-        let mut current = left;
+        let mut current = match left {
+            Node::Identifier(name) => Node::ExpressionCall {
+                name: name.to_string(),
+                arguments: Vec::new(),
+            },
+            _ => unreachable!("expr must start with an ident"),
+        };
 
         loop {
             match self.lexer.peek() {
@@ -275,30 +324,14 @@ impl Parser {
                     };
                 }
                 Token::Identifier(_) | Token::String(_) | Token::Number(_) => {
-                    let mut arguments = Vec::new();
-
-                    loop {
-                        match self.lexer.peek() {
-                            Token::Identifier(_) | Token::String(_) | Token::Number(_) => {
-                                arguments.push(self.term()?)
-                            }
-                            _ => break,
-                        }
-                    }
-
-                    current = Node::ExpressionCall {
-                        name: match current {
-                            Node::Identifier(name) => name.to_string(),
-                            _ => {
-                                return Err(ParseError::UnexpectedToken(
-                                    "expression",
-                                    self.lexer.peek(),
-                                    self.lexer.cursor(),
-                                ))
-                            }
-                        },
-                        arguments,
+                    let name = match current {
+                        Node::Identifier(name) => name.to_string(),
+                        Node::ExpressionCall { name, .. } => name.to_string(),
+                        _ => unreachable!("expr_call must start with an identifier"),
                     };
+                    let arguments = self.expression_call_arguments().unwrap_or(Vec::new());
+
+                    current = Node::ExpressionCall { name, arguments };
                 }
                 _ => {
                     if is_parens {
@@ -313,6 +346,17 @@ impl Parser {
         }
 
         Ok(current)
+    }
+
+    fn identifier(&mut self) -> Result<Node, ParseError> {
+        match self.lexer.next() {
+            Token::Identifier(name) => Ok(Node::Identifier(name)),
+            _ => Err(ParseError::UnexpectedToken(
+                "identifier",
+                self.lexer.peek(),
+                self.lexer.cursor(),
+            )),
+        }
     }
 
     fn term(&mut self) -> Result<Node, ParseError> {
@@ -364,9 +408,9 @@ impl Parser {
 
     fn case(&mut self) -> Result<Node, ParseError> {
         // case = 'case' term 'of' case_body
-        // case_pattern = '_' | string | number
-        // case_branch = case_pattern '=>' term
         // case_body = INDENT case_branch (NEWLINE case_branch)* DEDENT
+        // case_branch = case_pattern '=>' term
+        // case_pattern = '_' | string | number
 
         self.require(Token::Keyword(Keyword::Case), true)?;
 
@@ -379,14 +423,17 @@ impl Parser {
         let mut children = Vec::new();
 
         loop {
-            let pattern = self.term()?;
+            let pattern = match self.term()? {
+                Node::Identifier("_") => None,
+                any => Some(Box::new(any)),
+            };
 
             self.require(Token::MatchArrow, true)?;
 
             let result = self.term()?;
 
             children.push(Node::CaseBranch {
-                pattern: Box::new(pattern),
+                pattern,
                 result: Box::new(result),
             });
 
@@ -398,6 +445,10 @@ impl Parser {
             }
         }
 
+        if children.is_empty() {
+            return Err(ParseError::EmptyCase(self.lexer.cursor()));
+        }
+
         Ok(Node::Case {
             term: Box::new(term),
             children,
@@ -405,7 +456,7 @@ impl Parser {
     }
 
     fn each(&mut self) -> Result<Node, ParseError> {
-        // each = 'each' (term | range) 'do' block
+        // each = 'each' (term | range) 'do' (expr_call | string | number | block)
 
         self.require(Token::Keyword(Keyword::Each), true)?;
 
@@ -429,15 +480,20 @@ impl Parser {
 
         self.require(Token::Keyword(Keyword::Do), true)?;
 
-        let block = if let Node::Block { children } = self.block()? {
-            children
-        } else {
-            unreachable!("block must be a block (duh?)")
+        let children = match self.lexer.peek() {
+            Token::Indent(_) => match self.block()? {
+                Node::Block { children } => children,
+                _ => unreachable!("block must be a block (duh?)"),
+            },
+            _ => {
+                let child = self.expression(None)?;
+                vec![child]
+            }
         };
 
         Ok(Node::Each {
             collection: Box::new(collection),
-            children: block,
+            children,
         })
     }
 
@@ -471,14 +527,6 @@ impl Parser {
                 }
                 Token::Keyword(Keyword::Case) => self.case()?,
                 Token::Keyword(Keyword::Each) => self.each()?,
-                Token::Dedent(_) => {
-                    self.require_dedent()?;
-                    break;
-                }
-                Token::Newline => {
-                    self.lexer.next();
-                    continue;
-                }
                 _ => {
                     return Err(ParseError::UnexpectedToken(
                         "block_stmt",
@@ -489,6 +537,23 @@ impl Parser {
             };
 
             children.push(child);
+
+            match self.lexer.peek() {
+                Token::Dedent(_) => {
+                    self.require_dedent()?;
+                    break;
+                }
+                Token::Newline => {
+                    self.lexer.next();
+                }
+                _ => {
+                    return Err(ParseError::UnexpectedToken(
+                        "block_stmt",
+                        self.lexer.peek(),
+                        self.lexer.cursor(),
+                    ))
+                }
+            }
         }
 
         if children.is_empty() {
@@ -537,5 +602,398 @@ impl Parser {
             start: Box::new(start),
             end: Box::new(end),
         })
+    }
+}
+
+// TESTS
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_block() {
+        let mut lexer = Lexer::new(
+            r#"
+block ->
+  "one"
+  "two"
+"three"
+"#,
+        );
+        lexer.lex().expect("failed to lex");
+
+        let mut parser = Parser::new(lexer);
+        let ast = parser.parse().expect("failed to parse");
+
+        assert_eq!(
+            ast,
+            [
+                Node::ExpressionDefinition {
+                    name: "block".to_string(),
+                    expression: Box::new(Node::Block {
+                        children: [Node::String("one"), Node::String("two")].to_vec()
+                    }),
+                },
+                Node::String("three"),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_expr_def() {
+        let mut lexer = Lexer::new(r#"hello -> "world""#);
+        lexer.lex().expect("failed to lex");
+
+        let mut parser = Parser::new(lexer);
+        let ast = parser.parse().expect("failed to parse");
+
+        assert_eq!(
+            ast,
+            [Node::ExpressionDefinition {
+                name: "hello".to_string(),
+                expression: Box::new(Node::String("world")),
+            }]
+        );
+
+        lexer = Lexer::new(
+            r#"
+hello ->
+  "world"
+  "world"
+"#,
+        );
+        lexer.lex().expect("failed to lex");
+
+        parser = Parser::new(lexer);
+        let ast = parser.parse().expect("failed to parse");
+
+        assert_eq!(
+            ast,
+            [Node::ExpressionDefinition {
+                name: "hello".to_string(),
+                expression: Box::new(Node::Block {
+                    children: [Node::String("world"), Node::String("world")].to_vec()
+                }),
+            }]
+        );
+
+        lexer = Lexer::new(r#"hello -> "world" "world""#);
+        lexer.lex().expect("failed to lex");
+
+        parser = Parser::new(lexer);
+        let ast = parser.parse();
+
+        assert!(ast.is_err());
+    }
+
+    #[test]
+    fn test_expr_call() {
+        let mut lexer = Lexer::new(r#"hello "world" 3"#);
+        lexer.lex().expect("failed to lex");
+
+        let mut parser = Parser::new(lexer);
+        let ast = parser.parse().expect("failed to parse");
+
+        assert_eq!(
+            ast,
+            [Node::ExpressionCall {
+                name: "hello".to_string(),
+                arguments: [Node::String("world"), Node::Integer(3)].to_vec()
+            }]
+        );
+
+        lexer = Lexer::new(r#"hello"#);
+        lexer.lex().expect("failed to lex");
+
+        parser = Parser::new(lexer);
+        let ast = parser.parse().expect("failed to parse");
+
+        assert_eq!(
+            ast,
+            [Node::ExpressionCall {
+                name: "hello".to_string(),
+                arguments: [].to_vec(),
+            }]
+        )
+    }
+
+    #[test]
+    fn test_expr_apl() {
+        let mut lexer = Lexer::new(r#"a -> b <| c <| d"#);
+        lexer.lex().expect("failed to lex");
+
+        let mut parser = Parser::new(lexer);
+        let ast = parser.parse().expect("failed to parse");
+
+        assert_eq!(
+            ast,
+            [Node::ExpressionDefinition {
+                name: "a".to_string(),
+                expression: Box::new(Node::ExpressionApplication {
+                    left: Box::new(Node::ExpressionApplication {
+                        left: Box::new(Node::ExpressionCall {
+                            name: "b".to_string(),
+                            arguments: [].to_vec(),
+                        }),
+                        right: Box::new(Node::ExpressionCall {
+                            name: "c".to_string(),
+                            arguments: [].to_vec(),
+                        }),
+                    }),
+                    right: Box::new(Node::ExpressionCall {
+                        name: "d".to_string(),
+                        arguments: [].to_vec()
+                    })
+                })
+            }]
+        );
+
+        let mut lexer = Lexer::new(r#"a -> b <| (c <| d)"#);
+        lexer.lex().expect("failed to lex");
+
+        let mut parser = Parser::new(lexer);
+        let ast = parser.parse().expect("failed to parse");
+
+        assert_eq!(
+            ast,
+            [Node::ExpressionDefinition {
+                name: "a".to_string(),
+                expression: Box::new(Node::ExpressionApplication {
+                    left: Box::new(Node::ExpressionCall {
+                        name: "b".to_string(),
+                        arguments: [].to_vec(),
+                    }),
+                    right: Box::new(Node::ExpressionApplication {
+                        left: Box::new(Node::ExpressionCall {
+                            name: "c".to_string(),
+                            arguments: [].to_vec()
+                        }),
+                        right: Box::new(Node::ExpressionCall {
+                            name: "d".to_string(),
+                            arguments: [].to_vec()
+                        })
+                    })
+                })
+            }]
+        )
+    }
+
+    #[test]
+    fn test_scope_binding() {
+        let mut lexer = Lexer::new(r#"a -> b >> c"#);
+        lexer.lex().expect("failed to lex");
+
+        let mut parser = Parser::new(lexer);
+        let ast = parser.parse().expect("failed to parse");
+
+        assert_eq!(
+            ast,
+            [Node::ExpressionDefinition {
+                name: "a".to_string(),
+                expression: Box::new(Node::ScopeBinding {
+                    left: Some(Box::new(Node::ExpressionCall {
+                        name: "b".to_string(),
+                        arguments: [].to_vec()
+                    })),
+                    right: Box::new(Node::ExpressionCall {
+                        name: "c".to_string(),
+                        arguments: [].to_vec()
+                    })
+                })
+            }]
+        );
+
+        let mut lexer = Lexer::new(r#"a -> b <| c >> d"#);
+        lexer.lex().expect("failed to lex");
+
+        let mut parser = Parser::new(lexer);
+        let ast = parser.parse().expect("failed to parse");
+
+        assert_eq!(
+            ast,
+            [Node::ExpressionDefinition {
+                name: "a".to_string(),
+                expression: Box::new(Node::ScopeBinding {
+                    left: Some(Box::new(Node::ExpressionApplication {
+                        left: Box::new(Node::ExpressionCall {
+                            name: "b".to_string(),
+                            arguments: [].to_vec()
+                        }),
+                        right: Box::new(Node::ExpressionCall {
+                            name: "c".to_string(),
+                            arguments: [].to_vec()
+                        })
+                    })),
+                    right: Box::new(Node::ExpressionCall {
+                        name: "d".to_string(),
+                        arguments: [].to_vec()
+                    })
+                })
+            }]
+        );
+
+        let mut lexer = Lexer::new(r#"a -> b <| (c >> d)"#);
+        lexer.lex().expect("failed to lex");
+
+        let mut parser = Parser::new(lexer);
+        let ast = parser.parse().expect("failed to parse");
+
+        assert_eq!(
+            ast,
+            [Node::ExpressionDefinition {
+                name: "a".to_string(),
+                expression: Box::new(Node::ExpressionApplication {
+                    left: Box::new(Node::ExpressionCall {
+                        name: "b".to_string(),
+                        arguments: [].to_vec()
+                    }),
+                    right: Box::new(Node::ScopeBinding {
+                        left: Some(Box::new(Node::ExpressionCall {
+                            name: "c".to_string(),
+                            arguments: [].to_vec()
+                        })),
+                        right: Box::new(Node::ExpressionCall {
+                            name: "d".to_string(),
+                            arguments: [].to_vec()
+                        })
+                    }),
+                })
+            }]
+        );
+
+        let mut lexer = Lexer::new(
+            r#"
+a ->
+  "b"
+  >> c
+"#,
+        );
+        lexer.lex().expect("failed to lex");
+
+        let mut parser = Parser::new(lexer);
+        let ast = parser.parse().expect("failed to parse");
+
+        assert_eq!(
+            ast,
+            [Node::ExpressionDefinition {
+                name: "a".to_string(),
+                expression: Box::new(Node::Block {
+                    children: [
+                        Node::String("b"),
+                        Node::ScopeBinding {
+                            left: None,
+                            right: Box::new(Node::ExpressionCall {
+                                name: "c".to_string(),
+                                arguments: [].to_vec()
+                            })
+                        }
+                    ]
+                    .to_vec()
+                })
+            }]
+        );
+    }
+
+    #[test]
+    fn test_case() {
+        let mut lexer = Lexer::new(
+            r#"
+color -> case it of
+  "apples"  => "red"
+  "bananas" => "yellow"
+  _         => "unknown"
+"#,
+        );
+        lexer.lex().expect("failed to lex");
+
+        let mut parser = Parser::new(lexer);
+        let ast = parser.parse().expect("failed to parse");
+
+        assert_eq!(
+            ast,
+            [Node::ExpressionDefinition {
+                name: "color".to_string(),
+                expression: Box::new(Node::Case {
+                    term: Box::new(Node::Identifier("it")),
+                    children: [
+                        Node::CaseBranch {
+                            pattern: Some(Box::new(Node::String("apples"))),
+                            result: Box::new(Node::String("red"))
+                        },
+                        Node::CaseBranch {
+                            pattern: Some(Box::new(Node::String("bananas"))),
+                            result: Box::new(Node::String("yellow"))
+                        },
+                        Node::CaseBranch {
+                            pattern: None,
+                            result: Box::new(Node::String("unknown"))
+                        }
+                    ]
+                    .to_vec()
+                })
+            }]
+        );
+
+        let mut lexer = Lexer::new(
+            r#"
+color -> case it of
+
+"#,
+        );
+        lexer.lex().expect("failed to lex");
+
+        let mut parser = Parser::new(lexer);
+        let ast = parser.parse();
+
+        assert!(ast.is_err());
+    }
+
+    #[test]
+    fn test_each() {
+        let mut lexer = Lexer::new(
+            r#"
+colors ->
+  each fruits do
+    color -> to_color it
+"#,
+        );
+        lexer.lex().expect("failed to lex");
+
+        let mut parser = Parser::new(lexer);
+        let ast = parser.parse().expect("failed to parse");
+
+        assert_eq!(
+            ast,
+            [Node::ExpressionDefinition {
+                name: "colors".to_string(),
+                expression: Box::new(Node::Block {
+                    children: [Node::Each {
+                        collection: Box::new(Node::Identifier("fruits")),
+                        children: [Node::ExpressionDefinition {
+                            name: "color".to_string(),
+                            expression: Box::new(Node::ExpressionCall {
+                                name: "to_color".to_string(),
+                                arguments: [Node::Identifier("it")].to_vec()
+                            })
+                        }]
+                        .to_vec()
+                    }]
+                    .to_vec()
+                })
+            }]
+        );
+
+        let mut lexer = Lexer::new(
+            r#"
+colors -> each fruits do
+
+"#,
+        );
+        lexer.lex().expect("failed to lex");
+
+        let mut parser = Parser::new(lexer);
+        let ast = parser.parse();
+
+        assert!(ast.is_err());
     }
 }

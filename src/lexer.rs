@@ -24,9 +24,9 @@ pub enum Token {
     Symbol(char),                 // '.' | '(' | ')' | '[' | ']'
     RangeOperator(RangeOperator), // "..=" | "..<"
     AssignmentArrow,              // ->
+    ApplicationArrow,             // <|
     BindingArrow,                 // >>
     MatchArrow,                   // =>
-    ApplicationArrow,             // <|
     Newline,
     Indent(usize),
     Dedent(usize),
@@ -106,9 +106,10 @@ impl Lexer {
                     if spaces == 0 && !indent_stack.is_empty() {
                         while let Some(last_indent) = indent_stack.last() {
                             tokens.push(Token::Dedent(*last_indent));
-                            tokens.push(Token::Newline);
                             indent_stack.pop();
                         }
+
+                        tokens.push(Token::Newline);
                         continue;
                     }
 
@@ -128,9 +129,9 @@ impl Lexer {
                         while let Some(last_indent) = indent_stack.last() {
                             if indent < *last_indent {
                                 tokens.push(Token::Dedent(*last_indent));
-                                tokens.push(Token::Newline);
                                 indent_stack.pop();
                             } else {
+                                tokens.push(Token::Newline);
                                 break;
                             }
                         }
@@ -374,7 +375,7 @@ impl Lexer {
                     }
                 }
                 // Symbol
-                '(' | ')' => {
+                '(' | ')' | '[' | ']' => {
                     tokens.push(Token::Symbol(*self.scanner.next().unwrap()));
                 }
                 // Symbol / Range Operator
@@ -550,10 +551,14 @@ this is cool!
 
     #[test]
     fn test_symbol() {
-        let mut lexer = Lexer::new(".");
+        let mut lexer = Lexer::new(".()[]");
         lexer.lex().expect("failed to lex input");
 
         assert_eq!(lexer.next(), Token::Symbol('.'));
+        assert_eq!(lexer.next(), Token::Symbol('('));
+        assert_eq!(lexer.next(), Token::Symbol(')'));
+        assert_eq!(lexer.next(), Token::Symbol('['));
+        assert_eq!(lexer.next(), Token::Symbol(']'));
         assert_eq!(lexer.next(), Token::EOF);
     }
 
@@ -578,11 +583,11 @@ this is cool!
     }
 
     #[test]
-    fn test_match_arrow() {
-        let mut lexer = Lexer::new("=>");
+    fn test_expr_applicator() {
+        let mut lexer = Lexer::new("<|");
         lexer.lex().expect("failed to lex input");
 
-        assert_eq!(lexer.next(), Token::MatchArrow);
+        assert_eq!(lexer.next(), Token::ApplicationArrow);
         assert_eq!(lexer.next(), Token::EOF);
     }
 
@@ -596,11 +601,11 @@ this is cool!
     }
 
     #[test]
-    fn test_expr_applicator() {
-        let mut lexer = Lexer::new("<|");
+    fn test_match_arrow() {
+        let mut lexer = Lexer::new("=>");
         lexer.lex().expect("failed to lex input");
 
-        assert_eq!(lexer.next(), Token::ApplicationArrow);
+        assert_eq!(lexer.next(), Token::MatchArrow);
         assert_eq!(lexer.next(), Token::EOF);
     }
 
@@ -627,10 +632,12 @@ this is cool!
         assert_eq!(lexer.next(), Token::Indent(2));
         assert_eq!(lexer.next(), Token::Identifier("two"));
         assert_eq!(lexer.next(), Token::Dedent(2));
+        assert_eq!(lexer.next(), Token::Newline);
         assert_eq!(lexer.next(), Token::Identifier("one"));
         assert_eq!(lexer.next(), Token::Newline);
         assert_eq!(lexer.next(), Token::Identifier("one"));
         assert_eq!(lexer.next(), Token::Dedent(1));
+        assert_eq!(lexer.next(), Token::Newline);
         assert_eq!(lexer.next(), Token::Identifier("zero"));
         assert_eq!(lexer.next(), Token::EOF);
     }
