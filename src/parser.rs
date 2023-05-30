@@ -5,6 +5,7 @@ pub enum ParseError {
     UnexpectedToken(&'static str, Token, usize),
     UnexpectedEOF(&'static str, usize),
     NumberParseError(String, usize),
+    EmptyBlock(usize),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -43,7 +44,7 @@ pub enum Node {
         result: Box<Node>,
     },
     Each {
-        term: Box<Node>,
+        collection: Box<Node>,
         children: Vec<Node>,
     },
     Identifier(&'static str),
@@ -146,7 +147,10 @@ impl Parser {
         let result = match self.lexer.peek() {
             Token::Identifier(_) => match self.expression_definition() {
                 Ok(node) => node,
-                Err(_) => self.term()?,
+                Err(_) => {
+                    self.lexer.backtrack();
+                    self.term()?
+                }
             },
             Token::String(_) | Token::Number(_) => self.term()?,
             _ => {
@@ -175,8 +179,8 @@ impl Parser {
             Token::Identifier(_) => self.expression()?,
             Token::String(_) | Token::Number(_) => self.term()?,
             Token::Keyword(Keyword::Case) => self.case()?,
-            Token::Keyword(Keyword::Each) => todo!(), // self.each()?,
-            Token::Indent(_) => todo!(),              // self.block()?,
+            Token::Keyword(Keyword::Each) => self.each()?,
+            Token::Indent(_) => self.block()?,
             _ => {
                 return Err(ParseError::UnexpectedToken(
                     "expr_def",
@@ -200,9 +204,6 @@ impl Parser {
 
         let left = self.term()?;
 
-        println!("expr: {:?}", left);
-        println!("peek: {:?}", self.lexer.peek());
-
         let mut current = left;
 
         loop {
@@ -221,8 +222,6 @@ impl Parser {
                     let mut arguments = Vec::new();
 
                     loop {
-                        println!("internal peek: {:?}", self.lexer.peek());
-
                         match self.lexer.peek() {
                             Token::Identifier(_) | Token::String(_) | Token::Number(_) => {
                                 arguments.push(self.term()?)
@@ -301,7 +300,9 @@ impl Parser {
 
     fn case(&mut self) -> Result<Node, ParseError> {
         // case = 'case' term 'of' case_body
-        // case_body = INDENT term '=>' term (NEWLINE term '=>' term)* DEDENT
+        // case_pattern = '_' | string | number
+        // case_branch = case_pattern '=>' term
+        // case_body = INDENT case_branch (NEWLINE case_branch)* DEDENT
 
         self.require(Token::Keyword(Keyword::Case))?;
 
@@ -339,9 +340,91 @@ impl Parser {
         })
     }
 
-    fn range(&mut self) -> Result<Node, ParseError> {
-        self.lexer.next();
+    fn each(&mut self) -> Result<Node, ParseError> {
+        // each = 'each' (term | range) 'do' block
 
+        self.require(Token::Keyword(Keyword::Each))?;
+
+        let collection = match self.lexer.peek() {
+            Token::Identifier(_) | Token::String(_) => self.term()?,
+            Token::Number(_) => match self.range() {
+                Ok(range) => range,
+                Err(_) => {
+                    self.lexer.backtrack();
+                    self.term()?
+                }
+            },
+            _ => {
+                return Err(ParseError::UnexpectedToken(
+                    "each",
+                    self.lexer.peek(),
+                    self.lexer.cursor(),
+                ))
+            }
+        };
+
+        self.require(Token::Keyword(Keyword::Do))?;
+
+        let block = if let Node::Block { children } = self.block()? {
+            children
+        } else {
+            unreachable!("block must be a block (duh?)")
+        };
+
+        Ok(Node::Each {
+            collection: Box::new(collection),
+            children: block,
+        })
+    }
+
+    fn block(&mut self) -> Result<Node, ParseError> {
+        // block = INDENT block_stmt (block_stmt NEWLINE)+ DEDENT
+        // block_stmt = expr_def | expr | case | each
+
+        self.require_indent()?;
+
+        let mut children = Vec::new();
+
+        loop {
+            let child = match self.lexer.peek() {
+                Token::Identifier(_) => match self.expression_definition() {
+                    Ok(node) => node,
+                    Err(_) => {
+                        self.lexer.backtrack();
+                        self.expression()?
+                    }
+                },
+                Token::String(_) | Token::Number(_) => self.term()?,
+                Token::Keyword(Keyword::Case) => self.case()?,
+                Token::Keyword(Keyword::Each) => self.each()?,
+                Token::Dedent(_) => break,
+                _ => {
+                    return Err(ParseError::UnexpectedToken(
+                        "block_stmt",
+                        self.lexer.peek(),
+                        self.lexer.cursor(),
+                    ))?;
+                }
+            };
+
+            children.push(child);
+
+            if self.lexer.peek() == Token::Newline {
+                self.lexer.next();
+            } else {
+                self.require_dedent()?;
+                break;
+            }
+        }
+
+        if children.is_empty() {
+            return Err(ParseError::EmptyBlock(self.lexer.cursor()));
+        }
+
+        Ok(Node::Block { children })
+    }
+
+    fn range(&mut self) -> Result<Node, ParseError> {
         let start = match self.lexer.next() {
             Token::Number(num) => Node::Integer(num),
             _ => {

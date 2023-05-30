@@ -45,6 +45,7 @@ pub enum LexError {
 pub struct Lexer {
     scanner: Scanner,
     tokens: Vec<Token>,
+    cursor: usize,
 }
 
 impl Lexer {
@@ -52,7 +53,11 @@ impl Lexer {
         let scanner = Scanner::new(input);
         let tokens = Vec::new();
 
-        Self { scanner, tokens }
+        Self {
+            scanner,
+            tokens,
+            cursor: 0,
+        }
     }
 
     pub fn lex(&mut self) -> Result<(), LexError> {
@@ -418,23 +423,32 @@ impl Lexer {
             };
         }
 
-        tokens.reverse();
-
         self.tokens = tokens;
 
         Ok(())
     }
 
+    /// Returns the current cursor position.
     pub fn cursor(&self) -> usize {
-        self.tokens.len()
+        self.cursor
     }
 
+    /// Returns the token at the current cursor position.
     pub fn peek(&mut self) -> Token {
-        self.tokens.last().copied().unwrap_or(Token::EOF)
+        self.tokens.get(self.cursor).copied().unwrap_or(Token::EOF)
     }
 
+    /// Returns the token at the current cursor position and advances the cursor.
     pub fn next(&mut self) -> Token {
-        self.tokens.pop().unwrap_or(Token::EOF)
+        let token = self.tokens.get(self.cursor).copied().unwrap_or(Token::EOF);
+        self.cursor += 1;
+
+        token
+    }
+
+    /// Backtracks the cursor by one token.
+    pub fn backtrack(&mut self) {
+        self.cursor -= 1;
     }
 }
 
