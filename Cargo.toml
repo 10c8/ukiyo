@@ -9,5 +9,6 @@ name = "ukiyo"
 crate-type = ["cdylib"]
 
 [dependencies]
+colored = "2.0.0"
 pest = "2.6.0"
 pyo3 = "0.18.3"
