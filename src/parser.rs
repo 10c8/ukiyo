@@ -3,7 +3,6 @@ use crate::lexer::*;
 #[derive(Debug)]
 pub enum ParseError {
     UnexpectedToken(&'static str, Token, usize),
-    UnexpectedEOF(&'static str, usize),
     NumberParseError(String, usize),
     EmptyBlock(usize),
 }
@@ -34,9 +33,6 @@ pub enum Node {
     },
     Case {
         term: Box<Node>,
-        children: Vec<Node>,
-    },
-    CaseBlock {
         children: Vec<Node>,
     },
     CaseBranch {
