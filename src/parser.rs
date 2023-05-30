@@ -86,11 +86,14 @@ impl Parser {
         Ok(program)
     }
 
-    /// Consumes the next token if it matches `token`.
+    /// If the next token if it matches `token`, consumes it if `consume` is true.
     /// Otherwise, returns an error.
-    fn require(&mut self, token: Token) -> Result<(), ParseError> {
+    fn require(&mut self, token: Token, consume: bool) -> Result<(), ParseError> {
         if self.lexer.peek() == token {
-            self.lexer.next();
+            if consume {
+                self.lexer.next();
+            }
+
             Ok(())
         } else {
             Err(ParseError::UnexpectedToken(
@@ -105,7 +108,7 @@ impl Parser {
     /// Otherwise, returns an error.
     fn require_indent(&mut self) -> Result<(), ParseError> {
         let last_indent = self.indent_stack.last().unwrap_or(&0).clone();
-        self.require(Token::Indent(last_indent + 1))?;
+        self.require(Token::Indent(last_indent + 1), true)?;
 
         self.indent_stack.push(last_indent + 1);
 
@@ -116,24 +119,40 @@ impl Parser {
     /// Otherwise, returns an error.
     fn require_dedent(&mut self) -> Result<(), ParseError> {
         let last_indent = self.indent_stack.pop().unwrap_or(0);
-        self.require(Token::Dedent(last_indent))?;
+        self.require(Token::Dedent(last_indent), true)?;
 
         Ok(())
     }
 
     // Node parsers
     fn program(&mut self) -> Result<Node, ParseError> {
-        // program = SOI '\n'* stmt* EOI
+        // program = SOI '\n'* stmt ('\n' stmt)* EOI
 
         let mut children = Vec::new();
 
         loop {
             match self.lexer.peek() {
-                Token::EOF => break,
                 Token::Newline => {
                     self.lexer.next();
                 }
-                _ => children.push(self.statement()?),
+                Token::Identifier(_) | Token::String(_) | Token::Number(_) => {
+                    children.push(self.statement()?);
+
+                    match self.lexer.peek() {
+                        Token::Identifier(_) | Token::String(_) | Token::Number(_) => {
+                            self.require(Token::Newline, true)?;
+                        }
+                        _ => {}
+                    }
+                }
+                Token::EOF => break,
+                _ => {
+                    return Err(ParseError::UnexpectedToken(
+                        "program",
+                        self.lexer.peek(),
+                        self.lexer.cursor(),
+                    ))
+                }
             }
         }
 
@@ -172,7 +191,7 @@ impl Parser {
             _ => unreachable!("expr_def must start with an identifier"),
         };
 
-        self.require(Token::AssignmentArrow)?;
+        self.require(Token::AssignmentArrow, true)?;
 
         let expression = match self.lexer.peek() {
             Token::Identifier(_) | Token::Symbol('(') => self.expression(None),
@@ -283,7 +302,7 @@ impl Parser {
                 }
                 _ => {
                     if is_parens {
-                        self.require(Token::Symbol(')'))?;
+                        self.require(Token::Symbol(')'), true)?;
                         is_parens = false;
                         continue;
                     }
@@ -349,11 +368,11 @@ impl Parser {
         // case_branch = case_pattern '=>' term
         // case_body = INDENT case_branch (NEWLINE case_branch)* DEDENT
 
-        self.require(Token::Keyword(Keyword::Case))?;
+        self.require(Token::Keyword(Keyword::Case), true)?;
 
         let term = self.term()?;
 
-        self.require(Token::Keyword(Keyword::Of))?;
+        self.require(Token::Keyword(Keyword::Of), true)?;
 
         self.require_indent()?;
 
@@ -362,7 +381,7 @@ impl Parser {
         loop {
             let pattern = self.term()?;
 
-            self.require(Token::MatchArrow)?;
+            self.require(Token::MatchArrow, true)?;
 
             let result = self.term()?;
 
@@ -388,7 +407,7 @@ impl Parser {
     fn each(&mut self) -> Result<Node, ParseError> {
         // each = 'each' (term | range) 'do' block
 
-        self.require(Token::Keyword(Keyword::Each))?;
+        self.require(Token::Keyword(Keyword::Each), true)?;
 
         let collection = match self.lexer.peek() {
             Token::Identifier(_) | Token::String(_) => self.term()?,
@@ -408,7 +427,7 @@ impl Parser {
             }
         };
 
-        self.require(Token::Keyword(Keyword::Do))?;
+        self.require(Token::Keyword(Keyword::Do), true)?;
 
         let block = if let Node::Block { children } = self.block()? {
             children

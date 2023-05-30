@@ -21,7 +21,7 @@ pub enum Token {
     String(&'static str),         // "[^"]*"
     Regex(&'static str),          // /[^/]+/
     Number(u64),                  // [0-9]+
-    Symbol(char),                 // '.' | '(' | ')'
+    Symbol(char),                 // '.' | '(' | ')' | '[' | ']'
     RangeOperator(RangeOperator), // "..=" | "..<"
     AssignmentArrow,              // ->
     BindingArrow,                 // >>
@@ -106,6 +106,7 @@ impl Lexer {
                     if spaces == 0 && !indent_stack.is_empty() {
                         while let Some(last_indent) = indent_stack.last() {
                             tokens.push(Token::Dedent(*last_indent));
+                            tokens.push(Token::Newline);
                             indent_stack.pop();
                         }
                         continue;
@@ -127,6 +128,7 @@ impl Lexer {
                         while let Some(last_indent) = indent_stack.last() {
                             if indent < *last_indent {
                                 tokens.push(Token::Dedent(*last_indent));
+                                tokens.push(Token::Newline);
                                 indent_stack.pop();
                             } else {
                                 break;
