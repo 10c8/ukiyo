@@ -5,70 +5,30 @@ mod scanner;
 use colored::Colorize;
 
 fn main() {
-    let input = r#"
-# int -> re /[0-9]+/
-
-name -> gen
-age -> gen <| int <| stop ","
-class -> gen
-mantra -> gen <| temp 0.7
-strength -> gen <| int <| stop ","
-
-armor -> take valid_armor
-weapon -> take valid_weapon
-
-items -> gen <| temp 0.7 <| rep 3 >> join it ",\n"
-
-examples ->
-  each example_list
-    entities -> each it.entities " - ${it.name}: ${it.time}\n"
-
-    """
-    Sentence: ${it.sentence}
-    Entities and dates:
-    ${entities}
-    Reasoning: ${it.reasoning}
-    Anachronism: ${it.answer}
-    """
-  >> join it "\n\n"
-
-"""
-The following is a character profile for an RPG game in JSON format:
-```json
-{
-  "id": "${id}",
-  "description": "${description}",
-  "name": "${name}",
-  "age": ${age},
-  "class": "${class}",
-  "mantra": "${mantra}",
-  "strength": ${strength},
-  "armor": "${armor}",
-  "weapon": "${weapon}",
-  "items": [
-    ${items}
-  ]
-}
-"""
-"#;
-
     let example = r#"
+# fruits -> ["apples", "bananas", "oranges"]
+
 to_color -> case it of
   "apples"  => "red"
   "bananas" => "yellow"
   "oranges" => "orange"
-  _ => "unknown"
+  _         => "unknown"
 
 colors ->
-  each 0..=3 do
+  each fruits do
     color -> to_color it
     "${it} are ${color}!"
-  # >> join it "\n"
+  >> join it "\n"
 
 "Apples are ${apple_color}!"
 "#;
 
-    let mut lexer = lexer::Lexer::new(example);
+    // let tiny = r#"test -> gen <| test >> (some <| temp 0.6 >> join "\n")"#;
+    let tiny = r#"test -> (a >> b) <| c"#;
+
+    // test -> (gen <| test) >> ((some <| temp 0.6)) >> (join "\n"))
+
+    let mut lexer = lexer::Lexer::new(tiny);
     lexer.lex().expect("failed to lex input");
 
     println!("--- Tokens:");

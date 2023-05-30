@@ -28,7 +28,7 @@ pub enum Node {
         right: Box<Node>,
     },
     ScopeBinding {
-        left: Box<Node>,
+        left: Option<Box<Node>>,
         right: Box<Node>,
     },
     Case {
@@ -53,6 +53,9 @@ pub enum Node {
         end: Box<Node>,
     },
 }
+
+const SCOPE_BIND_PRECEDENCE: usize = 1;
+const EXPR_APL_PRECEDENCE: usize = 2;
 
 pub struct Parser {
     lexer: Lexer,
@@ -91,7 +94,7 @@ impl Parser {
             Ok(())
         } else {
             Err(ParseError::UnexpectedToken(
-                "require",
+                Box::leak(format!("require({:?})", token).into_boxed_str()),
                 self.lexer.peek(),
                 self.lexer.cursor(),
             ))
@@ -162,7 +165,7 @@ impl Parser {
     }
 
     fn expression_definition(&mut self) -> Result<Node, ParseError> {
-        // exprdef = identifier '->' (expr | case | each | block)
+        // expr_def = identifier '->' (expr | case | each | block)
 
         let name = match self.lexer.next() {
             Token::Identifier(name) => name,
@@ -172,11 +175,11 @@ impl Parser {
         self.require(Token::AssignmentArrow)?;
 
         let expression = match self.lexer.peek() {
-            Token::Identifier(_) => self.expression()?,
-            Token::String(_) | Token::Number(_) => self.term()?,
-            Token::Keyword(Keyword::Case) => self.case()?,
-            Token::Keyword(Keyword::Each) => self.each()?,
-            Token::Indent(_) => self.block()?,
+            Token::Identifier(_) | Token::Symbol('(') => self.expression(None),
+            Token::String(_) | Token::Number(_) => self.term(),
+            Token::Keyword(Keyword::Case) => self.case(),
+            Token::Keyword(Keyword::Each) => self.each(),
+            Token::Indent(_) => self.block(),
             _ => {
                 return Err(ParseError::UnexpectedToken(
                     "expr_def",
@@ -186,17 +189,37 @@ impl Parser {
             }
         };
 
+        if let Err(err) = expression {
+            println!("{:?}", err);
+            return Err(ParseError::UnexpectedToken(
+                "expr_def",
+                self.lexer.peek(),
+                self.lexer.cursor(),
+            ));
+        }
+
         Ok(Node::ExpressionDefinition {
             name: name.to_string(),
-            expression: Box::new(expression),
+            expression: Box::new(expression.unwrap()),
         })
     }
 
-    fn expression(&mut self) -> Result<Node, ParseError> {
-        // expr = term expr_tail
-        // expr_tail = (expr_apl | expr_call)*
+    fn expression(&mut self, precedence: Option<usize>) -> Result<Node, ParseError> {
+        // expr = '('? term expr_tail ')'?
+        // expr_tail = (expr_apl | scope_binding | expr_call)*
         // expr_apl = '<|' expr
+        // scope_binding = '>>' expr
         // expr_call = ident term*
+
+        println!("expr peek: {:?}", self.lexer.peek());
+
+        let precedence = precedence.unwrap_or(0);
+        let mut is_parens = false;
+
+        if self.lexer.peek() == Token::Symbol('(') {
+            is_parens = true;
+            self.lexer.next();
+        }
 
         let left = self.term()?;
 
@@ -205,12 +228,30 @@ impl Parser {
         loop {
             match self.lexer.peek() {
                 Token::ApplicationArrow => {
+                    if !is_parens && precedence >= EXPR_APL_PRECEDENCE {
+                        break;
+                    }
+
                     self.lexer.next();
 
-                    let right = self.expression()?;
+                    let right = self.expression(Some(EXPR_APL_PRECEDENCE))?;
 
                     current = Node::ExpressionApplication {
                         left: Box::new(current),
+                        right: Box::new(right),
+                    };
+                }
+                Token::BindingArrow => {
+                    if !is_parens && precedence >= SCOPE_BIND_PRECEDENCE {
+                        break;
+                    }
+
+                    self.lexer.next();
+
+                    let right = self.expression(Some(SCOPE_BIND_PRECEDENCE))?;
+
+                    current = Node::ScopeBinding {
+                        left: Some(Box::new(current)),
                         right: Box::new(right),
                     };
                 }
@@ -240,7 +281,15 @@ impl Parser {
                         arguments,
                     };
                 }
-                _ => break,
+                _ => {
+                    if is_parens {
+                        self.require(Token::Symbol(')'))?;
+                        is_parens = false;
+                        continue;
+                    }
+
+                    break;
+                }
             }
         }
 
@@ -375,7 +424,7 @@ impl Parser {
 
     fn block(&mut self) -> Result<Node, ParseError> {
         // block = INDENT block_stmt (block_stmt NEWLINE)+ DEDENT
-        // block_stmt = expr_def | expr | case | each
+        // block_stmt = expr_def | block_scope_binding | expr | case | each
 
         self.require_indent()?;
 
@@ -387,10 +436,20 @@ impl Parser {
                     Ok(node) => node,
                     Err(_) => {
                         self.lexer.backtrack();
-                        self.expression()?
+                        self.expression(None)?
                     }
                 },
                 Token::String(_) | Token::Number(_) => self.term()?,
+                Token::BindingArrow => {
+                    self.lexer.next();
+
+                    let right = self.expression(None)?;
+
+                    Node::ScopeBinding {
+                        left: None,
+                        right: Box::new(right),
+                    }
+                }
                 Token::Keyword(Keyword::Case) => self.case()?,
                 Token::Keyword(Keyword::Each) => self.each()?,
                 Token::Dedent(_) => break,
