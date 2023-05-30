@@ -23,12 +23,7 @@ colors ->
 "Apples are ${apple_color}!"
 "#;
 
-    // let tiny = r#"test -> gen <| test >> (some <| temp 0.6 >> join "\n")"#;
-    let tiny = r#"test -> (a >> b) <| c"#;
-
-    // test -> (gen <| test) >> ((some <| temp 0.6)) >> (join "\n"))
-
-    let mut lexer = lexer::Lexer::new(tiny);
+    let mut lexer = lexer::Lexer::new(example);
     lexer.lex().expect("failed to lex input");
 
     println!("--- Tokens:");

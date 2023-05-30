@@ -452,7 +452,14 @@ impl Parser {
                 }
                 Token::Keyword(Keyword::Case) => self.case()?,
                 Token::Keyword(Keyword::Each) => self.each()?,
-                Token::Dedent(_) => break,
+                Token::Dedent(_) => {
+                    self.require_dedent()?;
+                    break;
+                }
+                Token::Newline => {
+                    self.lexer.next();
+                    continue;
+                }
                 _ => {
                     return Err(ParseError::UnexpectedToken(
                         "block_stmt",
@@ -463,13 +470,6 @@ impl Parser {
             };
 
             children.push(child);
-
-            if self.lexer.peek() == Token::Newline {
-                self.lexer.next();
-            } else {
-                self.require_dedent()?;
-                break;
-            }
         }
 
         if children.is_empty() {
