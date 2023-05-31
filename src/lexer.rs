@@ -21,7 +21,7 @@ pub enum Token {
     String(&'static str),         // "[^"]*"
     Regex(&'static str),          // /[^/]+/
     Number(u64),                  // [0-9]+
-    Symbol(char),                 // '.' | '(' | ')' | '[' | ']'
+    Symbol(char),                 // ',' | '.' | '(' | ')' | '[' | ']'
     RangeOperator(RangeOperator), // "..=" | "..<"
     AssignmentArrow,              // ->
     ApplicationArrow,             // <|
@@ -90,12 +90,6 @@ impl Lexer {
 
                     if tab_size == 0 {
                         tab_size = spaces;
-                    } else if spaces % tab_size != 0 {
-                        return Err(LexError::UnexpectedIndent(
-                            spaces,
-                            self.scanner.line(),
-                            self.scanner.column(),
-                        ));
                     }
 
                     if tab_size == 0 {
@@ -113,21 +107,14 @@ impl Lexer {
                         continue;
                     }
 
-                    let indent = spaces / tab_size;
                     let last_indent = *indent_stack.last().unwrap_or(&0);
 
-                    if indent > last_indent + 1 {
-                        return Err(LexError::UnexpectedIndent(
-                            spaces,
-                            self.scanner.line(),
-                            self.scanner.column(),
-                        ));
-                    } else if indent > last_indent {
-                        indent_stack.push(indent);
-                        tokens.push(Token::Indent(indent));
-                    } else if indent < last_indent {
+                    if spaces > last_indent {
+                        indent_stack.push(spaces);
+                        tokens.push(Token::Indent(spaces));
+                    } else if spaces < last_indent {
                         while let Some(last_indent) = indent_stack.last() {
-                            if indent < *last_indent {
+                            if spaces < *last_indent {
                                 tokens.push(Token::Dedent(*last_indent));
                                 indent_stack.pop();
                             } else {
@@ -198,7 +185,6 @@ impl Lexer {
                         while let Some(_) = self.scanner.peek() {
                             if self.scanner.try_consume('\n') {
                                 let mut spaces = 0;
-                                let mut indent = 0;
 
                                 let last_indent = *indent_stack.last().unwrap_or(&0);
 
@@ -211,21 +197,11 @@ impl Lexer {
                                             break;
                                         }
                                     }
-
-                                    if spaces % tab_size != 0 {
-                                        return Err(LexError::UnexpectedIndent(
-                                            spaces,
-                                            self.scanner.line(),
-                                            self.scanner.column(),
-                                        ));
-                                    }
-
-                                    indent = spaces / tab_size;
                                 }
 
                                 if self.scanner.try_consume_sequence("\"\"\"") {
                                     if tab_size > 0 {
-                                        if indent != last_indent {
+                                        if spaces != last_indent {
                                             return Err(LexError::UnexpectedIndent(
                                                 spaces,
                                                 self.scanner.line(),
@@ -375,7 +351,7 @@ impl Lexer {
                     }
                 }
                 // Symbol
-                '(' | ')' | '[' | ']' => {
+                ',' | '(' | ')' | '[' | ']' => {
                     tokens.push(Token::Symbol(*self.scanner.next().unwrap()));
                 }
                 // Symbol / Range Operator
@@ -583,7 +559,7 @@ this is cool!
     }
 
     #[test]
-    fn test_expr_applicator() {
+    fn test_application_arrow() {
         let mut lexer = Lexer::new("<|");
         lexer.lex().expect("failed to lex input");
 
@@ -627,16 +603,16 @@ this is cool!
         lexer.lex().expect("failed to lex input");
 
         assert_eq!(lexer.next(), Token::Identifier("zero"));
-        assert_eq!(lexer.next(), Token::Indent(1));
-        assert_eq!(lexer.next(), Token::Identifier("one"));
         assert_eq!(lexer.next(), Token::Indent(2));
+        assert_eq!(lexer.next(), Token::Identifier("one"));
+        assert_eq!(lexer.next(), Token::Indent(4));
         assert_eq!(lexer.next(), Token::Identifier("two"));
+        assert_eq!(lexer.next(), Token::Dedent(4));
+        assert_eq!(lexer.next(), Token::Newline);
+        assert_eq!(lexer.next(), Token::Identifier("one"));
+        assert_eq!(lexer.next(), Token::Newline);
+        assert_eq!(lexer.next(), Token::Identifier("one"));
         assert_eq!(lexer.next(), Token::Dedent(2));
-        assert_eq!(lexer.next(), Token::Newline);
-        assert_eq!(lexer.next(), Token::Identifier("one"));
-        assert_eq!(lexer.next(), Token::Newline);
-        assert_eq!(lexer.next(), Token::Identifier("one"));
-        assert_eq!(lexer.next(), Token::Dedent(1));
         assert_eq!(lexer.next(), Token::Newline);
         assert_eq!(lexer.next(), Token::Identifier("zero"));
         assert_eq!(lexer.next(), Token::EOF);

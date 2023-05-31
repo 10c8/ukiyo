@@ -6,13 +6,13 @@ use colored::Colorize;
 
 fn main() {
     let example = r#"
-# fruits -> ["apples", "bananas", "oranges"]
+fruits -> ["apples", "bananas", "oranges"]
 
 to_color -> case it of
   "apples"  => "red"
   "bananas" => "yellow"
   "oranges" => "orange"
-  _         => "unknown"
+  _         => gen <| temp 0.3
 
 colors ->
   each fruits do
@@ -23,9 +23,7 @@ colors ->
 "Apples are ${apple_color}!"
 "#;
 
-    let test = r#"
-colors -> each fruits do write <| test "${it} is delicious!"
-"#;
+    let test = r#"colors -> ["red", "green", "blue", 3, "white"]"#;
 
     let mut lexer = lexer::Lexer::new(example);
     lexer.lex().expect("failed to lex input");
@@ -59,4 +57,8 @@ colors -> each fruits do write <| test "${it} is delicious!"
 
     println!("\n--- AST:");
     println!("{:#?}", ast);
+
+    // write ast to file as json
+    // let mut file = std::fs::File::create("ast.json").expect("failed to create file");
+    // serde_json::to_writer_pretty(&mut file, &ast).expect("failed to write to file");
 }

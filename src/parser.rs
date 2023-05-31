@@ -3,12 +3,13 @@ use crate::lexer::*;
 #[derive(Debug)]
 pub enum ParseError {
     UnexpectedToken(&'static str, Token, usize),
+    UnexpectedIndent(usize, usize),
     NumberParseError(String, usize),
     EmptyBlock(usize),
     EmptyCase(usize),
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(serde::Serialize, Debug, Clone, PartialEq)]
 pub enum Node {
     Program {
         children: Vec<Node>,
@@ -48,6 +49,9 @@ pub enum Node {
     String(&'static str),
     Integer(u64),
     Float(f64),
+    List {
+        children: Vec<Node>,
+    },
     Range {
         is_exclusive: bool,
         start: Box<Node>,
@@ -61,6 +65,7 @@ const EXPR_APL_PRECEDENCE: usize = 2;
 pub struct Parser {
     lexer: Lexer,
     indent_stack: Vec<usize>,
+    tab_size: usize,
 }
 
 impl Parser {
@@ -70,6 +75,7 @@ impl Parser {
         Parser {
             lexer,
             indent_stack,
+            tab_size: 0,
         }
     }
 
@@ -112,9 +118,26 @@ impl Parser {
     /// Otherwise, returns an error.
     fn require_indent(&mut self) -> Result<(), ParseError> {
         let last_indent = self.indent_stack.last().unwrap_or(&0).clone();
-        self.require(Token::Indent(last_indent + 1), true)?;
 
-        self.indent_stack.push(last_indent + 1);
+        match self.lexer.peek() {
+            Token::Indent(spaces) => {
+                if self.tab_size == 0 {
+                    self.tab_size = spaces;
+                } else if spaces == last_indent + self.tab_size {
+                    self.lexer.next();
+                    self.indent_stack.push(spaces);
+                } else {
+                    return Err(ParseError::UnexpectedIndent(spaces, self.lexer.cursor()));
+                }
+            }
+            _ => {
+                return Err(ParseError::UnexpectedToken(
+                    "indent",
+                    self.lexer.peek(),
+                    self.lexer.cursor(),
+                ));
+            }
+        }
 
         Ok(())
     }
@@ -126,6 +149,18 @@ impl Parser {
         self.require(Token::Dedent(last_indent), true)?;
 
         Ok(())
+    }
+
+    /// Consumes all newlines (and optionally indents and dedents) until a non-newline token is
+    /// found.
+    fn consume_newlines(&mut self, consume_indents: bool) {
+        while match self.lexer.peek() {
+            Token::Newline => true,
+            Token::Indent(_) | Token::Dedent(_) => consume_indents,
+            _ => false,
+        } {
+            self.lexer.next();
+        }
     }
 
     // Node parsers
@@ -176,10 +211,10 @@ impl Parser {
                         Ok(Node::Identifier(name)) => name.to_string(),
                         _ => {
                             return Err(ParseError::UnexpectedToken(
-                                "statement",
+                                "expr_call",
                                 self.lexer.peek(),
                                 self.lexer.cursor(),
-                            ))
+                            ));
                         }
                     };
                     let arguments = self.expression_call_arguments().unwrap_or(Vec::new());
@@ -211,11 +246,11 @@ impl Parser {
         self.require(Token::AssignmentArrow, true)?;
 
         let expression = match self.lexer.peek() {
-            Token::Identifier(_) | Token::Symbol('(') => self.expression(None),
-            Token::String(_) | Token::Number(_) => self.term(),
-            Token::Keyword(Keyword::Case) => self.case(),
-            Token::Keyword(Keyword::Each) => self.each(),
-            Token::Indent(_) => self.block(),
+            Token::Identifier(_) | Token::Symbol('(') => self.expression(None)?,
+            Token::String(_) | Token::Number(_) | Token::Symbol('[') => self.term()?,
+            Token::Keyword(Keyword::Case) => self.case()?,
+            Token::Keyword(Keyword::Each) => self.each()?,
+            Token::Indent(_) => self.block()?,
             _ => {
                 return Err(ParseError::UnexpectedToken(
                     "expr_def",
@@ -225,18 +260,9 @@ impl Parser {
             }
         };
 
-        if let Err(err) = expression {
-            println!("{:?}", err);
-            return Err(ParseError::UnexpectedToken(
-                "expr_def",
-                self.lexer.peek(),
-                self.lexer.cursor(),
-            ));
-        }
-
         Ok(Node::ExpressionDefinition {
             name: name.to_string(),
-            expression: Box::new(expression.unwrap()),
+            expression: Box::new(expression),
         })
     }
 
@@ -270,10 +296,10 @@ impl Parser {
 
     fn expression(&mut self, precedence: Option<usize>) -> Result<Node, ParseError> {
         // expr = '('? ident expr_tail ')'?
-        // expr_tail = (expr_apl | scope_binding | expr_call)*
+        // expr_tail = (expr_apl | scope_binding | expr_call_args)*
         // expr_apl = '<|' expr
         // scope_binding = '>>' expr
-        // expr_call = term*
+        // expr_call_args = term*
 
         let precedence = precedence.unwrap_or(0);
         let mut is_parens = false;
@@ -351,11 +377,14 @@ impl Parser {
     fn identifier(&mut self) -> Result<Node, ParseError> {
         match self.lexer.next() {
             Token::Identifier(name) => Ok(Node::Identifier(name)),
-            _ => Err(ParseError::UnexpectedToken(
-                "identifier",
-                self.lexer.peek(),
-                self.lexer.cursor(),
-            )),
+            _ => {
+                self.lexer.backtrack();
+                return Err(ParseError::UnexpectedToken(
+                    "identifier",
+                    self.lexer.peek(),
+                    self.lexer.cursor(),
+                ));
+            }
         }
     }
 
@@ -394,12 +423,56 @@ impl Parser {
                 }
                 _ => Node::Integer(num),
             },
+            Token::Symbol('[') => {
+                self.consume_newlines(true);
+
+                if let Token::Symbol(']') = self.lexer.peek() {
+                    self.lexer.next();
+
+                    return Ok(Node::List {
+                        children: Vec::new(),
+                    });
+                };
+
+                let mut children = Vec::new();
+
+                loop {
+                    self.consume_newlines(true);
+
+                    children.push(self.term()?);
+
+                    self.consume_newlines(true);
+
+                    match self.lexer.peek() {
+                        Token::Symbol(',') => {
+                            self.lexer.next();
+
+                            self.consume_newlines(true);
+
+                            match self.lexer.peek() {
+                                Token::Symbol(']') => {
+                                    self.lexer.next();
+                                    break;
+                                }
+                                _ => continue,
+                            }
+                        }
+                        _ => {
+                            self.require(Token::Symbol(']'), true)?;
+                            break;
+                        }
+                    }
+                }
+
+                Node::List { children }
+            }
             _ => {
+                self.lexer.backtrack();
                 return Err(ParseError::UnexpectedToken(
                     "term",
                     self.lexer.peek(),
                     self.lexer.cursor(),
-                ))
+                ));
             }
         };
 
@@ -409,7 +482,7 @@ impl Parser {
     fn case(&mut self) -> Result<Node, ParseError> {
         // case = 'case' term 'of' case_body
         // case_body = INDENT case_branch (NEWLINE case_branch)* DEDENT
-        // case_branch = case_pattern '=>' term
+        // case_branch = case_pattern '=>' expr | term
         // case_pattern = '_' | string | number
 
         self.require(Token::Keyword(Keyword::Case), true)?;
@@ -430,7 +503,10 @@ impl Parser {
 
             self.require(Token::MatchArrow, true)?;
 
-            let result = self.term()?;
+            let result = match self.expression(None) {
+                Ok(expr) => expr,
+                Err(_) => self.term()?,
+            };
 
             children.push(Node::CaseBranch {
                 pattern,
@@ -509,10 +585,7 @@ impl Parser {
             let child = match self.lexer.peek() {
                 Token::Identifier(_) => match self.expression_definition() {
                     Ok(node) => node,
-                    Err(_) => {
-                        self.lexer.backtrack();
-                        self.expression(None)?
-                    }
+                    Err(_) => self.expression(None)?,
                 },
                 Token::String(_) | Token::Number(_) => self.term()?,
                 Token::BindingArrow => {
@@ -567,33 +640,36 @@ impl Parser {
         let start = match self.lexer.next() {
             Token::Number(num) => Node::Integer(num),
             _ => {
+                self.lexer.backtrack();
                 return Err(ParseError::UnexpectedToken(
                     "range",
                     self.lexer.peek(),
                     self.lexer.cursor(),
-                ))
+                ));
             }
         };
 
         let op = match self.lexer.next() {
             Token::RangeOperator(op) => op,
             _ => {
+                self.lexer.backtrack();
                 return Err(ParseError::UnexpectedToken(
                     "range",
                     self.lexer.peek(),
                     self.lexer.cursor(),
-                ))
+                ));
             }
         };
 
         let end = match self.lexer.next() {
             Token::Number(num) => Node::Integer(num),
             _ => {
+                self.lexer.backtrack();
                 return Err(ParseError::UnexpectedToken(
                     "range",
                     self.lexer.peek(),
                     self.lexer.cursor(),
-                ))
+                ));
             }
         };
 
@@ -714,7 +790,7 @@ hello ->
                 name: "hello".to_string(),
                 arguments: [].to_vec(),
             }]
-        )
+        );
     }
 
     #[test]
@@ -775,7 +851,7 @@ hello ->
                     })
                 })
             }]
-        )
+        );
     }
 
     #[test]
@@ -995,5 +1071,47 @@ colors -> each fruits do
         let ast = parser.parse();
 
         assert!(ast.is_err());
+    }
+
+    #[test]
+    fn test_list() {
+        let mut lexer = Lexer::new(
+            r#"
+colors -> [
+    "red",
+  3
+, 4.2]
+"#,
+        );
+        lexer.lex().expect("failed to lex");
+
+        let mut parser = Parser::new(lexer);
+        let ast = parser.parse().expect("failed to parse");
+
+        assert_eq!(
+            ast,
+            [Node::ExpressionDefinition {
+                name: "colors".to_string(),
+                expression: Box::new(Node::List {
+                    children: [Node::String("red"), Node::Integer(3), Node::Float(4.2)].to_vec()
+                })
+            }]
+        );
+
+        lexer = Lexer::new(r#"colors -> []"#);
+        lexer.lex().expect("failed to lex");
+
+        parser = Parser::new(lexer);
+        let ast = parser.parse().expect("failed to parse");
+
+        assert_eq!(
+            ast,
+            [Node::ExpressionDefinition {
+                name: "colors".to_string(),
+                expression: Box::new(Node::List {
+                    children: [].to_vec()
+                })
+            }]
+        );
     }
 }
