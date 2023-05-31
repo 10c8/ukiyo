@@ -123,7 +123,9 @@ impl Parser {
             Token::Indent(spaces) => {
                 if self.tab_size == 0 {
                     self.tab_size = spaces;
-                } else if spaces == last_indent + self.tab_size {
+                }
+
+                if spaces == last_indent + self.tab_size {
                     self.lexer.next();
                     self.indent_stack.push(spaces);
                 } else {
