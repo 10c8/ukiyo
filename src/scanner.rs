@@ -31,6 +31,11 @@ impl Scanner {
         self.chars.get(self.cursor)
     }
 
+    /// Returns the nth lookahead character without advancing the cursor.
+    pub fn peek_nth(&self, n: usize) -> Option<&char> {
+        self.chars.get(self.cursor + n)
+    }
+
     /// If there is a next character, returns it and advances the cursor.
     pub fn next(&mut self) -> Option<&char> {
         match self.chars.get(self.cursor) {

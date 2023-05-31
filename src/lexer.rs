@@ -182,19 +182,41 @@ impl Lexer {
                     let is_multiline = self.scanner.try_consume_sequence("\"\"\"\n");
 
                     if is_multiline {
+                        let last_indent = *indent_stack.last().unwrap_or(&0);
+                        let mut discarded_indent = 0;
+
+                        while discarded_indent < last_indent {
+                            if self.scanner.try_consume(' ') {
+                                discarded_indent += 1;
+                            } else {
+                                break;
+                            }
+                        }
+
                         while let Some(_) = self.scanner.peek() {
                             if self.scanner.try_consume('\n') {
                                 let mut spaces = 0;
 
-                                let last_indent = *indent_stack.last().unwrap_or(&0);
-
                                 if last_indent > 0 {
-                                    while let Some(chr) = self.scanner.peek() {
-                                        if *chr == ' ' {
-                                            spaces += 1;
-                                            self.scanner.next();
-                                        } else {
-                                            break;
+                                    while let Some(' ') = self.scanner.peek_nth(spaces) {
+                                        spaces += 1;
+                                    }
+
+                                    if spaces < last_indent {
+                                        return Err(LexError::UnexpectedIndent(
+                                            spaces,
+                                            self.scanner.line(),
+                                            self.scanner.column(),
+                                        ));
+                                    } else {
+                                        discarded_indent = 0;
+
+                                        while discarded_indent < last_indent {
+                                            if self.scanner.try_consume(' ') {
+                                                discarded_indent += 1;
+                                            } else {
+                                                break;
+                                            }
                                         }
                                     }
                                 }
@@ -215,6 +237,14 @@ impl Lexer {
                                     string.push('\n');
                                 }
                             } else {
+                                if self.scanner.try_consume_sequence("\"\"\"") {
+                                    return Err(LexError::UnexpectedChar(
+                                        '"',
+                                        self.scanner.column(),
+                                        self.scanner.line(),
+                                    ));
+                                }
+
                                 string.push(*self.scanner.next().unwrap());
                             }
                         }
