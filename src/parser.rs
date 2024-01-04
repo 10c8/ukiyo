@@ -1,48 +1,179 @@
+use std::fmt::Write;
+
 use crate::lexer::*;
+
+type Range = (usize, usize);
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum AstNode<'a> {
     Prog {
         body: Vec<AstNode<'a>>,
+        range: Range,
     },
     FuncDecl {
-        id: Box<AstNode<'a>>,
-        params: Vec<&'a str>,
+        id: Option<Box<AstNode<'a>>>,
+        params: Vec<AstNode<'a>>,
         body: Box<AstNode<'a>>,
+        range: Range,
     },
     Ident {
         name: &'a str,
+        range: Range,
     },
     StrLit {
         value: &'a str,
+        format: bool,
+        range: Range,
     },
     NumLit {
         value: f64,
+        range: Range,
     },
+}
+
+impl<'a> AstNode<'a> {
+    pub fn range(&self) -> Range {
+        match self {
+            AstNode::Prog { range, .. }
+            | AstNode::FuncDecl { range, .. }
+            | AstNode::Ident { range, .. }
+            | AstNode::StrLit { range, .. }
+            | AstNode::NumLit { range, .. } => *range,
+        }
+    }
 }
 
 type PResult = Result<AstNode<'static>, PError>;
 
 #[derive(Debug)]
 pub enum PError {
-    UnexpectedToken { expected: Token, found: Token },
-    UnexpectedNode,
+    ParseError,
+    SyntaxError { expected: &'static [&'static str] },
+}
+
+/// When a parser fails, the lexer is reset to its state before the parser was called.
+macro_rules! try_parse {
+    ($self:ident: $parser:ident) => {{
+        let before = $self.lexer.clone();
+        match $self.$parser() {
+            Ok(result) => Ok(result),
+            Err(result) => {
+                $self.lexer = before;
+                Err(result)
+            }
+        }
+    }};
+}
+
+/// Tries to match a parser one or more times, separated by another parser, returning a vector of
+/// the results.
+macro_rules! sep {
+    ($self:ident: $parser:ident / $sep:ident) => {{
+        let mut results = Vec::new();
+
+        loop {
+            let result = try_parse!($self: $parser);
+            if let Ok(result) = result {
+                results.push(result);
+            } else {
+                break;
+            }
+
+            if try_parse!($self: $sep).is_err() {
+                break;
+            }
+        }
+
+        results
+    }};
 }
 
 /// Tries a list of parsers and returns the result of the first one that
 /// succeeds, or an error if none succeed.
-macro_rules! one_of {
-    ($self:ident : $first:ident $(, $rest:ident)*) => {
+macro_rules! any {
+    ($first_exp:literal $(, $rest_exp:literal)*; $self:ident: $first:ident $(| $rest:ident)*) => {
         {
-            if let Ok(result) = $self.$first() {
+            if let Ok(result) = try_parse!($self: $first) {
                 Ok(result)
-            } $(else if let Ok(result) = $self.$rest() {
+            } $(else if let Ok(result) = try_parse!($self: $rest) {
                 Ok(result)
             })* else {
-                Err(PError::UnexpectedNode)
+                Err(PError::SyntaxError {
+                    expected: &[$first_exp $(, $rest_exp)*],
+                })
             }
         }
     };
+}
+
+/// Matches a parser zero or more times, returning a vector of the results.
+macro_rules! many {
+    ($self:ident: $parser:ident) => {{
+        let mut results = Vec::new();
+
+        loop {
+            let result = try_parse!($self: $parser);
+            if let Ok(result) = result {
+                results.push(result);
+            } else {
+                break;
+            }
+        }
+
+        results
+    }};
+}
+
+/// Matches a token, returning it if it succeeds, or an error if it fails.
+macro_rules! token {
+    ($name:literal; $self:ident: $($token:pat => $result:expr),*) => {{
+        match $self.lexer.peek() {
+            $($token => {
+                $self.lexer.next();
+                $result
+            }),*,
+            _ => Err(PError::SyntaxError {
+                expected: &[$name],
+            }),
+        }
+    }};
+}
+
+/// Tries to match a token, returning `Some(token)` if it succeeds, or `None` if it fails.
+macro_rules! try_token {
+    ($self:ident: $token:pat) => {{
+        match $self.lexer.peek() {
+            $token => Some($self.lexer.next()),
+            _ => None,
+        }
+    }};
+}
+
+/// Expects a token and throws error if it fails.
+macro_rules! expect_token {
+    ($self:ident: $token:pat) => {{
+        if let $token = $self.lexer.peek() {
+            $self.lexer.next();
+        } else {
+            return Err(PError::ParseError);
+        }
+    }};
+}
+
+/// Matches a token zero or more times, returning a vector of the results.
+macro_rules! many_token {
+    ($self:ident: $token:pat) => {{
+        let mut results = Vec::new();
+
+        loop {
+            match $self.lexer.peek() {
+                $token => results.push($self.lexer.next()),
+                _ => break,
+            }
+        }
+
+        results
+    }};
 }
 
 pub struct Parser {
@@ -58,125 +189,172 @@ impl Parser {
         let program = self.parse_program()?;
 
         if self.lexer.peek() != Token::EOF {
-            return Err(PError::UnexpectedToken {
-                expected: Token::EOF,
-                found: self.lexer.peek(),
-            });
+            return Err(PError::ParseError);
         }
 
         Ok(program)
     }
 
-    /// If the next token matches `token`, consumes it if `consume` is true.
-    /// Otherwise, returns an error.
-    fn expect(&mut self, token: Token, consume: bool) -> Result<(), PError> {
-        if self.lexer.peek() == token {
-            if consume {
-                self.lexer.next();
-            }
+    pub fn display_error(&mut self, err: PError) -> Result<String, std::fmt::Error> {
+        let mut msg = String::new();
 
-            Ok(())
-        } else {
-            Err(PError::UnexpectedToken {
-                expected: token,
-                found: self.lexer.peek(),
-            })
+        let next = self.lexer.peek();
+        let span = next.span();
+        let line = span.line;
+        let column = span.column;
+        let start = span.range.0;
+        let end = span.range.1;
+
+        match err {
+            PError::ParseError => {
+                write!(&mut msg, "Parsing Error @ {}:{}\n", line, column)?;
+                self.display_error_line(&mut msg, line, column, start, end);
+
+                write!(&mut msg, "Unexpected {}.", next.to_string())?;
+            }
+            PError::SyntaxError { expected } => {
+                write!(&mut msg, "Syntax Error @ {}:{}\n", line, column)?;
+                self.display_error_line(&mut msg, line, column, start, end);
+
+                write!(&mut msg, "Expected one of:")?;
+                for e in expected {
+                    write!(&mut msg, "\n - {}", e)?;
+                }
+            }
         }
+
+        Ok(msg)
     }
 
-    fn transform<T>(&mut self, cb: impl FnOnce(Token) -> Option<T>) -> Option<T> {
-        match self.lexer.peek() {
-            Token::EOF => None,
-            token => match cb(token) {
-                Some(output) => {
-                    self.lexer.next();
+    fn display_error_line(
+        &mut self,
+        msg: &mut String,
+        line: usize,
+        column: usize,
+        start: usize,
+        end: usize,
+    ) {
+        let code = self.lexer.code_line(line);
+        let marker = format!("{} | ", line);
+        write!(msg, "{}{}\n", marker, code).unwrap();
+        write!(msg, "{}", " ".repeat(column - 1 + marker.len())).unwrap();
+        write!(msg, "{}\n", "^".repeat(end - start)).unwrap();
+    }
 
-                    Some(output)
-                }
-                None => None,
-            },
+    fn parse_newline(&mut self) -> Result<(), PError> {
+        token! {
+            "newline";
+            self: Token::Newline { .. } => Ok(())
         }
     }
 
     fn parse_program(&mut self) -> PResult {
-        let mut body = Vec::new();
+        many_token!(self: Token::Newline { .. });
 
-        loop {
-            if let Ok(stmt) = self.parse_expr() {
-                body.push(stmt);
-            } else {
-                break;
+        let body = sep!(self: parse_stmt / parse_newline);
+
+        many_token!(self: Token::Newline { .. });
+
+        let range = (0, body.last().map(|stmt| stmt.range().1).unwrap_or(0));
+
+        Ok(AstNode::Prog { body, range })
+    }
+
+    fn parse_stmt(&mut self) -> PResult {
+        any!(
+            "function declaration", "expression";
+            self: parse_func_decl | parse_expr
+        )
+    }
+
+    fn parse_func_decl(&mut self) -> PResult {
+        let anon_marker = try_token!(self: Token::Symbol { value: '\\', .. });
+
+        let range_start;
+        let id = match anon_marker {
+            Some(Token::Symbol { span, .. }) => {
+                range_start = span.range.0;
+                None
             }
-        }
+            None => {
+                range_start = self.lexer.peek().span().range.0;
+                Some(Box::new(self.parse_identifier()?))
+            }
+            _ => unreachable!(),
+        };
 
-        Ok(AstNode::Prog { body })
+        let params = many!(self: parse_identifier);
+
+        expect_token!(self: Token::AssignmentArrow { .. });
+
+        let body = Box::new(self.parse_expr()?);
+
+        let range = (range_start, body.range().1);
+
+        Ok(AstNode::FuncDecl {
+            id,
+            params,
+            body,
+            range,
+        })
     }
 
     fn parse_expr(&mut self) -> PResult {
-        one_of!(self: parse_identifier, parse_string, parse_number)
+        any!(
+            "identifier", "string", "number";
+            self: parse_identifier | parse_string | parse_number
+        )
     }
 
     fn parse_identifier(&mut self) -> PResult {
-        match self.lexer.peek() {
-            Token::Identifier(name) => {
-                self.lexer.next();
-
-                Ok(AstNode::Ident { name })
+        token! {
+            "identifier";
+            self: Token::Identifier { name, span } => {
+                Ok(AstNode::Ident {
+                    name,
+                    range: (span.range.0, span.range.1),
+                })
             }
-            _ => Err(PError::UnexpectedToken {
-                expected: Token::Identifier(""),
-                found: self.lexer.peek(),
-            }),
         }
     }
 
     fn parse_string(&mut self) -> PResult {
-        match self.lexer.peek() {
-            Token::String(value) => {
-                self.lexer.next();
+        let format = try_token!(self: Token::Symbol { value: '$', .. });
 
-                Ok(AstNode::StrLit { value })
+        token! {
+            "string";
+            self: Token::String { value, span } => {
+                Ok(AstNode::StrLit {
+                    value,
+                    format: format.is_some(),
+                    range: (span.range.0, span.range.1),
+                })
             }
-            _ => Err(PError::UnexpectedToken {
-                expected: Token::String(""),
-                found: self.lexer.peek(),
-            }),
         }
     }
 
     fn parse_number(&mut self) -> PResult {
-        match self.lexer.peek() {
-            Token::Number(whole) => {
-                self.lexer.next();
-
-                match self.lexer.peek() {
-                    Token::Symbol('.') => {
-                        self.lexer.next();
-
-                        match self.lexer.peek() {
-                            Token::Number(fraction) => {
-                                self.lexer.next();
-
-                                let number = format!("{}.{}", whole, fraction);
-                                Ok(AstNode::NumLit {
-                                    value: number.parse().unwrap(),
-                                })
-                            }
-                            _ => Err(PError::UnexpectedToken {
-                                expected: Token::Number(0),
-                                found: self.lexer.peek(),
-                            }),
-                        }
-                    }
-                    _ => Ok(AstNode::NumLit {
+        token! {
+            "number";
+            self: Token::Number { value: whole, span: w_span } => {
+                if try_token!(self: Token::Symbol { value: '.', .. }).is_none() {
+                    return Ok(AstNode::NumLit {
                         value: whole as f64,
-                    }),
+                        range: (w_span.range.0, w_span.range.1),
+                    });
+                }
+
+                token! {
+                    "number";
+                    self: Token::Number { value: fraction, span: f_span } => {
+                        let number = format!("{}.{}", whole, fraction);
+                        Ok(AstNode::NumLit {
+                            value: number.parse().unwrap(),
+                            range: (w_span.range.0, f_span.range.1),
+                        })
+                    }
                 }
             }
-            _ => Err(PError::UnexpectedToken {
-                expected: Token::Number(0),
-                found: self.lexer.peek(),
-            }),
         }
     }
 }

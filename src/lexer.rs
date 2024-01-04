@@ -1,6 +1,13 @@
 use crate::scanner::*;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Span {
+    pub line: usize,
+    pub column: usize,
+    pub range: (usize, usize),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Keyword {
     Case,
     Do,
@@ -16,20 +23,111 @@ pub enum RangeOperator {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Token {
-    Identifier(&'static str),     // [a-zA-Z_][a-zA-Z0-9_]*
-    Keyword(Keyword),             // case | do | each | of
-    String(&'static str),         // "[^"]*"
-    Regex(&'static str),          // /[^/]+/
-    Number(u64),                  // [0-9]+
-    Symbol(char),                 // ',' | '.' | '=' | ':' | '(' | ')' | '[' | ']' | '{' | '}'
-    RangeOperator(RangeOperator), // "..=" | "..<"
-    AssignmentArrow,              // ->
-    ApplicationArrow,             // <|
-    MatchArrow,                   // =>
-    Newline,
-    Indent(usize),
-    Dedent(usize),
+    Identifier {
+        // [a-zA-Z_][a-zA-Z0-9_]*
+        name: &'static str,
+        span: Span,
+    },
+    Keyword {
+        // case | do | each | of
+        name: Keyword,
+        span: Span,
+    },
+    String {
+        // "[^"]*"
+        value: &'static str,
+        span: Span,
+    },
+    Regex {
+        // /[^/]+/
+        value: &'static str,
+        span: Span,
+    },
+    Number {
+        // [0-9]+
+        value: u64,
+        span: Span,
+    },
+    Symbol {
+        // ',' | '.' | '=' | '$' | ':' | '\' | '(' | ')' | '[' | ']' | '{' | '}'
+        value: char,
+        span: Span,
+    },
+    RangeOperator {
+        // "..=" | "..<"
+        mode: RangeOperator,
+        span: Span,
+    },
+    AssignmentArrow {
+        // ->
+        span: Span,
+    },
+    ApplicationArrow {
+        // <|
+        span: Span,
+    },
+    MatchArrow {
+        // =>
+        span: Span,
+    },
+    Newline {
+        span: Span,
+    },
+    Indent {
+        size: usize,
+        span: Span,
+    },
+    Dedent {
+        size: usize,
+        span: Span,
+    },
     EOF,
+}
+
+impl Token {
+    pub fn span(&self) -> Span {
+        match self {
+            Token::Identifier { span, .. }
+            | Token::Keyword { span, .. }
+            | Token::String { span, .. }
+            | Token::Regex { span, .. }
+            | Token::Number { span, .. }
+            | Token::Symbol { span, .. }
+            | Token::RangeOperator { span, .. }
+            | Token::AssignmentArrow { span, .. }
+            | Token::ApplicationArrow { span, .. }
+            | Token::MatchArrow { span, .. }
+            | Token::Newline { span, .. }
+            | Token::Indent { span, .. }
+            | Token::Dedent { span, .. } => *span,
+            Token::EOF => Span {
+                line: 0,
+                column: 0,
+                range: (0, 0),
+            },
+        }
+    }
+}
+
+impl std::fmt::Display for Token {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        match self {
+            Token::Identifier { .. } => write!(f, "identifier"),
+            Token::Keyword { .. } => write!(f, "keyword"),
+            Token::String { .. } => write!(f, "string"),
+            Token::Regex { .. } => write!(f, "regex"),
+            Token::Number { .. } => write!(f, "number"),
+            Token::Symbol { value, .. } => write!(f, "\"{}\"", value),
+            Token::RangeOperator { .. } => write!(f, "range"),
+            Token::AssignmentArrow { .. } => write!(f, "\"->\""),
+            Token::ApplicationArrow { .. } => write!(f, "\"<|\""),
+            Token::MatchArrow { .. } => write!(f, "\"=>\""),
+            Token::Newline { .. } => write!(f, "newline"),
+            Token::Indent { .. } => write!(f, "indent"),
+            Token::Dedent { .. } => write!(f, "dedent"),
+            Token::EOF => write!(f, "end of file"),
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -45,6 +143,7 @@ pub struct Lexer {
     scanner: Scanner,
     tokens: Vec<Token>,
     cursor: usize,
+    lines: Vec<String>,
 }
 
 impl Lexer {
@@ -52,10 +151,16 @@ impl Lexer {
         let scanner = Scanner::new(input);
         let tokens = Vec::new();
 
+        let mut lines = Vec::new();
+        for line in input.lines() {
+            lines.push(line.to_string());
+        }
+
         Self {
             scanner,
             tokens,
             cursor: 0,
+            lines,
         }
     }
 
@@ -66,6 +171,10 @@ impl Lexer {
         let mut tab_size = 0;
 
         while let Some(chr) = self.scanner.peek() {
+            let span_start = self.scanner.cursor();
+            let line = self.scanner.line();
+            let column = self.scanner.column();
+
             match chr {
                 // Comment
                 '#' => {
@@ -87,22 +196,31 @@ impl Lexer {
                         }
                     }
 
+                    let span = Span {
+                        line,
+                        column,
+                        range: (span_start, self.scanner.cursor()),
+                    };
+
                     if tab_size == 0 {
                         tab_size = spaces;
                     }
 
                     if tab_size == 0 {
-                        tokens.push(Token::Newline);
+                        tokens.push(Token::Newline { span });
                         continue;
                     }
 
                     if spaces == 0 && !indent_stack.is_empty() {
                         while let Some(last_indent) = indent_stack.last() {
-                            tokens.push(Token::Dedent(*last_indent));
+                            tokens.push(Token::Dedent {
+                                size: *last_indent,
+                                span,
+                            });
                             indent_stack.pop();
                         }
 
-                        tokens.push(Token::Newline);
+                        tokens.push(Token::Newline { span });
                         continue;
                     }
 
@@ -110,19 +228,22 @@ impl Lexer {
 
                     if spaces > last_indent {
                         indent_stack.push(spaces);
-                        tokens.push(Token::Indent(spaces));
+                        tokens.push(Token::Indent { size: spaces, span });
                     } else if spaces < last_indent {
                         while let Some(last_indent) = indent_stack.last() {
                             if spaces < *last_indent {
-                                tokens.push(Token::Dedent(*last_indent));
+                                tokens.push(Token::Dedent {
+                                    size: *last_indent,
+                                    span,
+                                });
                                 indent_stack.pop();
                             } else {
-                                tokens.push(Token::Newline);
+                                tokens.push(Token::Newline { span });
                                 break;
                             }
                         }
                     } else {
-                        tokens.push(Token::Newline);
+                        tokens.push(Token::Newline { span });
                     }
                 }
                 // Whitespace
@@ -145,12 +266,33 @@ impl Lexer {
                         }
                     }
 
+                    let span = Span {
+                        line,
+                        column,
+                        range: (span_start, self.scanner.cursor()),
+                    };
+
                     let token = match identifier.as_str() {
-                        "case" => Token::Keyword(Keyword::Case),
-                        "do" => Token::Keyword(Keyword::Do),
-                        "each" => Token::Keyword(Keyword::Each),
-                        "of" => Token::Keyword(Keyword::Of),
-                        _ => Token::Identifier(Box::leak(identifier.into_boxed_str())),
+                        "case" => Token::Keyword {
+                            name: Keyword::Case,
+                            span,
+                        },
+                        "do" => Token::Keyword {
+                            name: Keyword::Do,
+                            span,
+                        },
+                        "each" => Token::Keyword {
+                            name: Keyword::Each,
+                            span,
+                        },
+                        "of" => Token::Keyword {
+                            name: Keyword::Of,
+                            span,
+                        },
+                        _ => Token::Identifier {
+                            name: Box::leak(identifier.into_boxed_str()),
+                            span,
+                        },
                     };
                     tokens.push(token);
                 }
@@ -170,10 +312,19 @@ impl Lexer {
                         }
                     }
 
+                    let span = Span {
+                        line,
+                        column,
+                        range: (span_start, self.scanner.cursor()),
+                    };
+
                     let number = number.parse::<u64>().map_err(|_| {
                         LexError::NumberOverflow(self.scanner.column(), self.scanner.line())
                     })?;
-                    tokens.push(Token::Number(number));
+                    tokens.push(Token::Number {
+                        value: number,
+                        span,
+                    });
                 }
                 // String
                 '"' => {
@@ -289,7 +440,16 @@ impl Lexer {
                         }
                     }
 
-                    tokens.push(Token::String(Box::leak(string.into_boxed_str())));
+                    let span = Span {
+                        line,
+                        column,
+                        range: (span_start, self.scanner.cursor()),
+                    };
+
+                    tokens.push(Token::String {
+                        value: Box::leak(string.into_boxed_str()),
+                        span,
+                    });
                 }
                 // Regex
                 '/' => {
@@ -335,14 +495,29 @@ impl Lexer {
                         }
                     }
 
-                    tokens.push(Token::Regex(Box::leak(regex.into_boxed_str())));
+                    let span = Span {
+                        line,
+                        column,
+                        range: (span_start, self.scanner.cursor()),
+                    };
+
+                    tokens.push(Token::Regex {
+                        value: Box::leak(regex.into_boxed_str()),
+                        span,
+                    });
                 }
                 // Assignment Arrow
                 '-' => {
                     self.scanner.next();
 
                     if self.scanner.try_consume('>') {
-                        tokens.push(Token::AssignmentArrow);
+                        tokens.push(Token::AssignmentArrow {
+                            span: Span {
+                                line,
+                                column,
+                                range: (span_start, self.scanner.cursor()),
+                            },
+                        });
                     } else {
                         return Err(LexError::UnexpectedChar(
                             *self.scanner.peek().unwrap(),
@@ -356,14 +531,34 @@ impl Lexer {
                     self.scanner.next();
 
                     if self.scanner.try_consume('>') {
-                        tokens.push(Token::MatchArrow);
+                        tokens.push(Token::MatchArrow {
+                            span: Span {
+                                line,
+                                column,
+                                range: (span_start, self.scanner.cursor()),
+                            },
+                        });
                     } else {
-                        tokens.push(Token::Symbol('='));
+                        tokens.push(Token::Symbol {
+                            value: '=',
+                            span: Span {
+                                line,
+                                column,
+                                range: (span_start, self.scanner.cursor()),
+                            },
+                        });
                     }
                 }
                 // Symbol
-                ',' | ':' | '(' | ')' | '[' | ']' | '{' | '}' => {
-                    tokens.push(Token::Symbol(*self.scanner.next().unwrap()));
+                ',' | ':' | '$' | '\\' | '(' | ')' | '[' | ']' | '{' | '}' => {
+                    tokens.push(Token::Symbol {
+                        value: *self.scanner.next().unwrap(),
+                        span: Span {
+                            line,
+                            column,
+                            range: (span_start, self.scanner.cursor()),
+                        },
+                    });
                 }
                 // Symbol / Range Operator
                 '.' => {
@@ -371,9 +566,23 @@ impl Lexer {
 
                     if self.scanner.try_consume('.') {
                         if self.scanner.try_consume('=') {
-                            tokens.push(Token::RangeOperator(RangeOperator::Inclusive));
+                            tokens.push(Token::RangeOperator {
+                                mode: RangeOperator::Inclusive,
+                                span: Span {
+                                    line,
+                                    column,
+                                    range: (span_start, self.scanner.cursor()),
+                                },
+                            });
                         } else if self.scanner.try_consume('<') {
-                            tokens.push(Token::RangeOperator(RangeOperator::Exclusive));
+                            tokens.push(Token::RangeOperator {
+                                mode: RangeOperator::Exclusive,
+                                span: Span {
+                                    line,
+                                    column,
+                                    range: (span_start, self.scanner.cursor()),
+                                },
+                            });
                         } else {
                             if let Some(invalid) = self.scanner.peek() {
                                 return Err(LexError::UnexpectedChar(
@@ -389,7 +598,14 @@ impl Lexer {
                             }
                         }
                     } else {
-                        tokens.push(Token::Symbol('.'));
+                        tokens.push(Token::Symbol {
+                            value: '.',
+                            span: Span {
+                                line,
+                                column,
+                                range: (span_start, self.scanner.cursor()),
+                            },
+                        });
                     }
                 }
                 // Expression Applicator
@@ -397,7 +613,13 @@ impl Lexer {
                     self.scanner.next();
 
                     if self.scanner.try_consume('|') {
-                        tokens.push(Token::ApplicationArrow);
+                        tokens.push(Token::ApplicationArrow {
+                            span: Span {
+                                line,
+                                column,
+                                range: (span_start, self.scanner.cursor()),
+                            },
+                        });
                     } else {
                         return Err(LexError::UnexpectedChar(
                             *self.scanner.peek().unwrap(),
@@ -422,9 +644,9 @@ impl Lexer {
         Ok(())
     }
 
-    /// Returns the current cursor position.
-    pub fn cursor(&self) -> usize {
-        self.cursor
+    /// Returns the line at the given index.
+    pub fn code_line(&self, line: usize) -> &str {
+        &self.lines[line - 1]
     }
 
     /// Returns the token at the current cursor position.
@@ -438,11 +660,6 @@ impl Lexer {
         self.cursor += 1;
 
         token
-    }
-
-    /// Backtracks the cursor by one token.
-    pub fn backtrack(&mut self) {
-        self.cursor -= 1;
     }
 }
 
@@ -459,18 +676,57 @@ test -> "test" # this is an inline comment
         );
         lexer.lex().expect("failed to lex input");
 
-        assert_eq!(lexer.next(), Token::Identifier("test"));
-        assert_eq!(lexer.next(), Token::AssignmentArrow);
-        assert_eq!(lexer.next(), Token::String("test"));
+        assert_eq!(
+            lexer.next(),
+            Token::Identifier {
+                name: "test",
+                span: Span {
+                    line: 2,
+                    column: 1,
+                    range: (20, 24),
+                },
+            },
+        );
+        assert_eq!(
+            lexer.next(),
+            Token::AssignmentArrow {
+                span: Span {
+                    line: 2,
+                    column: 6,
+                    range: (25, 27),
+                },
+            },
+        );
+        assert_eq!(
+            lexer.next(),
+            Token::String {
+                value: "test",
+                span: Span {
+                    line: 2,
+                    column: 9,
+                    range: (28, 34),
+                },
+            },
+        );
         assert_eq!(lexer.next(), Token::EOF);
     }
 
     #[test]
     fn test_identifier() {
-        let mut lexer = Lexer::new("hello");
+        let mut lexer = Lexer::new("hello_World23");
         lexer.lex().expect("failed to lex input");
 
-        assert_eq!(lexer.next(), Token::Identifier("hello"));
+        assert_eq!(
+            lexer.next(),
+            Token::Identifier {
+                name: "hello_World23",
+                span: Span {
+                    line: 1,
+                    column: 1,
+                    range: (0, 13),
+                },
+            },
+        );
         assert_eq!(lexer.next(), Token::EOF);
     }
 
@@ -479,7 +735,17 @@ test -> "test" # this is an inline comment
         let mut lexer = Lexer::new("case");
         lexer.lex().expect("failed to lex input");
 
-        assert_eq!(lexer.next(), Token::Keyword(Keyword::Case));
+        assert_eq!(
+            lexer.next(),
+            Token::Keyword {
+                name: Keyword::Case,
+                span: Span {
+                    line: 1,
+                    column: 1,
+                    range: (0, 4),
+                },
+            },
+        );
         assert_eq!(lexer.next(), Token::EOF);
     }
 
@@ -488,7 +754,17 @@ test -> "test" # this is an inline comment
         let mut lexer = Lexer::new(r#""hello world\n""#);
         lexer.lex().expect("failed to lex input");
 
-        assert_eq!(lexer.next(), Token::String("hello world\n"));
+        assert_eq!(
+            lexer.next(),
+            Token::String {
+                value: "hello world\n",
+                span: Span {
+                    line: 1,
+                    column: 1,
+                    range: (0, 15),
+                },
+            },
+        );
         assert_eq!(lexer.next(), Token::EOF);
     }
 
@@ -497,23 +773,52 @@ test -> "test" # this is an inline comment
         let mut lexer = Lexer::new(r#""hello \"world\"\n"#);
         lexer.lex().expect("failed to lex input");
 
-        assert_eq!(lexer.next(), Token::String("hello \"world\"\n"));
+        assert_eq!(
+            lexer.next(),
+            Token::String {
+                value: "hello \"world\"\n",
+                span: Span {
+                    line: 1,
+                    column: 1,
+                    range: (0, 18),
+                },
+            },
+        );
         assert_eq!(lexer.next(), Token::EOF);
     }
 
     #[test]
     fn test_multiline_string() {
         let mut lexer = Lexer::new(
-            r#""""
-hello "world"
-this is cool!
-""""#,
+            r#"
+  """
+  hello "world"
+  this is cool!
+  """"#,
         );
         lexer.lex().expect("failed to lex input");
 
         assert_eq!(
             lexer.next(),
-            Token::String("hello \"world\"\nthis is cool!")
+            Token::Indent {
+                size: 2,
+                span: Span {
+                    line: 1,
+                    column: 1,
+                    range: (0, 3),
+                },
+            },
+        );
+        assert_eq!(
+            lexer.next(),
+            Token::String {
+                value: "hello \"world\"\nthis is cool!",
+                span: Span {
+                    line: 2,
+                    column: 3,
+                    range: (3, 44),
+                },
+            },
         );
         assert_eq!(lexer.next(), Token::EOF);
     }
@@ -523,7 +828,17 @@ this is cool!
         let mut lexer = Lexer::new(r#"/[a-zA-Z]+/"#);
         lexer.lex().expect("failed to lex input");
 
-        assert_eq!(lexer.next(), Token::Regex("[a-zA-Z]+"));
+        assert_eq!(
+            lexer.next(),
+            Token::Regex {
+                value: "[a-zA-Z]+",
+                span: Span {
+                    line: 1,
+                    column: 1,
+                    range: (0, 11),
+                },
+            },
+        );
         assert_eq!(lexer.next(), Token::EOF);
     }
 
@@ -532,22 +847,157 @@ this is cool!
         let mut lexer = Lexer::new("123");
         lexer.lex().expect("failed to lex input");
 
-        assert_eq!(lexer.next(), Token::Number(123));
+        assert_eq!(
+            lexer.next(),
+            Token::Number {
+                value: 123,
+                span: Span {
+                    line: 1,
+                    column: 1,
+                    range: (0, 3),
+                },
+            },
+        );
         assert_eq!(lexer.next(), Token::EOF);
     }
 
     #[test]
     fn test_symbol() {
-        let mut lexer = Lexer::new(".()[]{}");
+        let mut lexer = Lexer::new(",.=$:\\()[]{}");
         lexer.lex().expect("failed to lex input");
 
-        assert_eq!(lexer.next(), Token::Symbol('.'));
-        assert_eq!(lexer.next(), Token::Symbol('('));
-        assert_eq!(lexer.next(), Token::Symbol(')'));
-        assert_eq!(lexer.next(), Token::Symbol('['));
-        assert_eq!(lexer.next(), Token::Symbol(']'));
-        assert_eq!(lexer.next(), Token::Symbol('{'));
-        assert_eq!(lexer.next(), Token::Symbol('}'));
+        assert_eq!(
+            lexer.next(),
+            Token::Symbol {
+                value: ',',
+                span: Span {
+                    line: 1,
+                    column: 1,
+                    range: (0, 1),
+                },
+            },
+        );
+        assert_eq!(
+            lexer.next(),
+            Token::Symbol {
+                value: '.',
+                span: Span {
+                    line: 1,
+                    column: 2,
+                    range: (1, 2),
+                },
+            },
+        );
+        assert_eq!(
+            lexer.next(),
+            Token::Symbol {
+                value: '=',
+                span: Span {
+                    line: 1,
+                    column: 3,
+                    range: (2, 3),
+                },
+            },
+        );
+        assert_eq!(
+            lexer.next(),
+            Token::Symbol {
+                value: '$',
+                span: Span {
+                    line: 1,
+                    column: 4,
+                    range: (3, 4),
+                },
+            },
+        );
+        assert_eq!(
+            lexer.next(),
+            Token::Symbol {
+                value: ':',
+                span: Span {
+                    line: 1,
+                    column: 5,
+                    range: (4, 5),
+                },
+            },
+        );
+        assert_eq!(
+            lexer.next(),
+            Token::Symbol {
+                value: '\\',
+                span: Span {
+                    line: 1,
+                    column: 6,
+                    range: (5, 6),
+                },
+            },
+        );
+        assert_eq!(
+            lexer.next(),
+            Token::Symbol {
+                value: '(',
+                span: Span {
+                    line: 1,
+                    column: 7,
+                    range: (6, 7),
+                },
+            },
+        );
+        assert_eq!(
+            lexer.next(),
+            Token::Symbol {
+                value: ')',
+                span: Span {
+                    line: 1,
+                    column: 8,
+                    range: (7, 8),
+                },
+            },
+        );
+        assert_eq!(
+            lexer.next(),
+            Token::Symbol {
+                value: '[',
+                span: Span {
+                    line: 1,
+                    column: 9,
+                    range: (8, 9),
+                },
+            },
+        );
+        assert_eq!(
+            lexer.next(),
+            Token::Symbol {
+                value: ']',
+                span: Span {
+                    line: 1,
+                    column: 10,
+                    range: (9, 10),
+                },
+            },
+        );
+        assert_eq!(
+            lexer.next(),
+            Token::Symbol {
+                value: '{',
+                span: Span {
+                    line: 1,
+                    column: 11,
+                    range: (10, 11),
+                },
+            },
+        );
+        assert_eq!(
+            lexer.next(),
+            Token::Symbol {
+                value: '}',
+                span: Span {
+                    line: 1,
+                    column: 12,
+                    range: (11, 12),
+                },
+            },
+        );
         assert_eq!(lexer.next(), Token::EOF);
     }
 
@@ -556,17 +1006,77 @@ this is cool!
         let mut lexer = Lexer::new("0..=5");
         lexer.lex().expect("failed to lex input");
 
-        assert_eq!(lexer.next(), Token::Number(0));
-        assert_eq!(lexer.next(), Token::RangeOperator(RangeOperator::Inclusive));
-        assert_eq!(lexer.next(), Token::Number(5));
+        assert_eq!(
+            lexer.next(),
+            Token::Number {
+                value: 0,
+                span: Span {
+                    line: 1,
+                    column: 1,
+                    range: (0, 1),
+                },
+            },
+        );
+        assert_eq!(
+            lexer.next(),
+            Token::RangeOperator {
+                mode: RangeOperator::Inclusive,
+                span: Span {
+                    line: 1,
+                    column: 2,
+                    range: (1, 4),
+                },
+            },
+        );
+        assert_eq!(
+            lexer.next(),
+            Token::Number {
+                value: 5,
+                span: Span {
+                    line: 1,
+                    column: 5,
+                    range: (4, 5),
+                },
+            },
+        );
         assert_eq!(lexer.next(), Token::EOF);
 
         lexer = Lexer::new("0..<5");
         lexer.lex().expect("failed to lex input");
 
-        assert_eq!(lexer.next(), Token::Number(0));
-        assert_eq!(lexer.next(), Token::RangeOperator(RangeOperator::Exclusive));
-        assert_eq!(lexer.next(), Token::Number(5));
+        assert_eq!(
+            lexer.next(),
+            Token::Number {
+                value: 0,
+                span: Span {
+                    line: 1,
+                    column: 1,
+                    range: (0, 1),
+                },
+            },
+        );
+        assert_eq!(
+            lexer.next(),
+            Token::RangeOperator {
+                mode: RangeOperator::Exclusive,
+                span: Span {
+                    line: 1,
+                    column: 2,
+                    range: (1, 4),
+                },
+            },
+        );
+        assert_eq!(
+            lexer.next(),
+            Token::Number {
+                value: 5,
+                span: Span {
+                    line: 1,
+                    column: 5,
+                    range: (4, 5),
+                },
+            },
+        );
         assert_eq!(lexer.next(), Token::EOF);
     }
 
@@ -575,7 +1085,16 @@ this is cool!
         let mut lexer = Lexer::new("->");
         lexer.lex().expect("failed to lex input");
 
-        assert_eq!(lexer.next(), Token::AssignmentArrow);
+        assert_eq!(
+            lexer.next(),
+            Token::AssignmentArrow {
+                span: Span {
+                    line: 1,
+                    column: 1,
+                    range: (0, 2),
+                },
+            },
+        );
         assert_eq!(lexer.next(), Token::EOF);
     }
 
@@ -584,7 +1103,16 @@ this is cool!
         let mut lexer = Lexer::new("<|");
         lexer.lex().expect("failed to lex input");
 
-        assert_eq!(lexer.next(), Token::ApplicationArrow);
+        assert_eq!(
+            lexer.next(),
+            Token::ApplicationArrow {
+                span: Span {
+                    line: 1,
+                    column: 1,
+                    range: (0, 2),
+                },
+            },
+        );
         assert_eq!(lexer.next(), Token::EOF);
     }
 
@@ -593,40 +1121,94 @@ this is cool!
         let mut lexer = Lexer::new("=>");
         lexer.lex().expect("failed to lex input");
 
-        assert_eq!(lexer.next(), Token::MatchArrow);
+        assert_eq!(
+            lexer.next(),
+            Token::MatchArrow {
+                span: Span {
+                    line: 1,
+                    column: 1,
+                    range: (0, 2),
+                },
+            },
+        );
         assert_eq!(lexer.next(), Token::EOF);
     }
 
     #[test]
     fn test_newline() {
-        let mut lexer = Lexer::new("\ntest\n\n\ntest");
+        let mut lexer = Lexer::new("\ntest\n\r\n\ntest");
         lexer.lex().expect("failed to lex input");
 
-        assert_eq!(lexer.next(), Token::Newline);
-        assert_eq!(lexer.next(), Token::Identifier("test"));
-        assert_eq!(lexer.next(), Token::Newline);
-        assert_eq!(lexer.next(), Token::Identifier("test"));
+        assert_eq!(
+            lexer.next(),
+            Token::Newline {
+                span: Span {
+                    line: 1,
+                    column: 1,
+                    range: (0, 1),
+                },
+            },
+        );
+        assert_eq!(
+            lexer.next(),
+            Token::Identifier {
+                name: "test",
+                span: Span {
+                    line: 2,
+                    column: 1,
+                    range: (1, 5),
+                },
+            },
+        );
+        assert_eq!(
+            lexer.next(),
+            Token::Newline {
+                span: Span {
+                    line: 2,
+                    column: 5,
+                    range: (5, 6),
+                },
+            },
+        );
+        assert_eq!(
+            lexer.next(),
+            Token::Identifier {
+                name: "test",
+                span: Span {
+                    line: 5,
+                    column: 1,
+                    range: (9, 13),
+                },
+            },
+        );
         assert_eq!(lexer.next(), Token::EOF);
     }
 
     #[test]
     fn test_indentation() {
-        let mut lexer = Lexer::new("zero\n  one\n    two\n\n  one\n\n\n  one\nzero");
-        lexer.lex().expect("failed to lex input");
+        todo!()
 
-        assert_eq!(lexer.next(), Token::Identifier("zero"));
-        assert_eq!(lexer.next(), Token::Indent(2));
-        assert_eq!(lexer.next(), Token::Identifier("one"));
-        assert_eq!(lexer.next(), Token::Indent(4));
-        assert_eq!(lexer.next(), Token::Identifier("two"));
-        assert_eq!(lexer.next(), Token::Dedent(4));
-        assert_eq!(lexer.next(), Token::Newline);
-        assert_eq!(lexer.next(), Token::Identifier("one"));
-        assert_eq!(lexer.next(), Token::Newline);
-        assert_eq!(lexer.next(), Token::Identifier("one"));
-        assert_eq!(lexer.next(), Token::Dedent(2));
-        assert_eq!(lexer.next(), Token::Newline);
-        assert_eq!(lexer.next(), Token::Identifier("zero"));
-        assert_eq!(lexer.next(), Token::EOF);
+        /*
+        #[test]
+        fn test_indentation() {
+            let mut lexer = Lexer::new("zero\n  one\n    two\n\n  one\n\n\n  one\nzero");
+            lexer.lex().expect("failed to lex input");
+
+            assert_eq!(lexer.next(), Token::Identifier("zero"));
+            assert_eq!(lexer.next(), Token::Indent(2));
+            assert_eq!(lexer.next(), Token::Identifier("one"));
+            assert_eq!(lexer.next(), Token::Indent(4));
+            assert_eq!(lexer.next(), Token::Identifier("two"));
+            assert_eq!(lexer.next(), Token::Dedent(4));
+            assert_eq!(lexer.next(), Token::Newline);
+            assert_eq!(lexer.next(), Token::Identifier("one"));
+            assert_eq!(lexer.next(), Token::Newline);
+            assert_eq!(lexer.next(), Token::Identifier("one"));
+            assert_eq!(lexer.next(), Token::Dedent(2));
+            assert_eq!(lexer.next(), Token::Newline);
+            assert_eq!(lexer.next(), Token::Identifier("zero"));
+            assert_eq!(lexer.next(), Token::EOF);
+        }
+        */
     }
 }

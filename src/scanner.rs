@@ -16,6 +16,11 @@ impl Scanner {
         }
     }
 
+    /// Returns the current cursor position.
+    pub fn cursor(&self) -> usize {
+        self.cursor
+    }
+
     /// Returns the current column position.
     pub fn column(&self) -> usize {
         self.column
