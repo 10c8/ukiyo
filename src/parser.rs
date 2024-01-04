@@ -10,10 +10,19 @@ pub enum AstNode<'a> {
         body: Vec<AstNode<'a>>,
         range: Range,
     },
+    ExprStmt {
+        expr: Box<AstNode<'a>>,
+        range: Range,
+    },
     FuncDecl {
         id: Option<Box<AstNode<'a>>>,
         params: Vec<AstNode<'a>>,
         body: Box<AstNode<'a>>,
+        range: Range,
+    },
+    FuncCall {
+        callee: Box<AstNode<'a>>,
+        arg: Option<Box<AstNode<'a>>>,
         range: Range,
     },
     Ident {
@@ -35,7 +44,9 @@ impl<'a> AstNode<'a> {
     pub fn range(&self) -> Range {
         match self {
             AstNode::Prog { range, .. }
+            | AstNode::ExprStmt { range, .. }
             | AstNode::FuncDecl { range, .. }
+            | AstNode::FuncCall { range, .. }
             | AstNode::Ident { range, .. }
             | AstNode::StrLit { range, .. }
             | AstNode::NumLit { range, .. } => *range,
@@ -51,35 +62,34 @@ pub enum PError {
     SyntaxError { expected: &'static [&'static str] },
 }
 
-/// When a parser fails, the lexer is reset to its state before the parser was called.
+/// Tries to match a parser. Returns `Option<T>`.
+///
+/// After failing, resets the lexer to its state before the parser was called.
 macro_rules! try_parse {
     ($self:ident: $parser:ident) => {{
         let before = $self.lexer.clone();
         match $self.$parser() {
-            Ok(result) => Ok(result),
-            Err(result) => {
+            Ok(result) => Some(result),
+            Err(_) => {
                 $self.lexer = before;
-                Err(result)
+                None
             }
         }
     }};
 }
 
-/// Tries to match a parser one or more times, separated by another parser, returning a vector of
-/// the results.
+/// Tries to match a parser zero or more times, separated by another parser. Returns `Vec<T>`.
 macro_rules! sep {
     ($self:ident: $parser:ident / $sep:ident) => {{
         let mut results = Vec::new();
 
         loop {
-            let result = try_parse!($self: $parser);
-            if let Ok(result) = result {
-                results.push(result);
-            } else {
-                break;
+            match try_parse!($self: $parser) {
+                Some(result) => results.push(result),
+                _ => break,
             }
 
-            if try_parse!($self: $sep).is_err() {
+            if try_parse!($self: $sep).is_none() {
                 break;
             }
         }
@@ -88,35 +98,30 @@ macro_rules! sep {
     }};
 }
 
-/// Tries a list of parsers and returns the result of the first one that
-/// succeeds, or an error if none succeed.
+/// Tries a list of parsers and stops on the first success.
 macro_rules! any {
     ($first_exp:literal $(, $rest_exp:literal)*; $self:ident: $first:ident $(| $rest:ident)*) => {
-        {
-            if let Ok(result) = try_parse!($self: $first) {
-                Ok(result)
-            } $(else if let Ok(result) = try_parse!($self: $rest) {
-                Ok(result)
-            })* else {
-                Err(PError::SyntaxError {
-                    expected: &[$first_exp $(, $rest_exp)*],
-                })
-            }
+        if let Some(result) = try_parse!($self: $first) {
+            Ok(result)
+        } $(else if let Some(result) = try_parse!($self: $rest) {
+            Ok(result)
+        })* else {
+            Err(PError::SyntaxError {
+                expected: &[$first_exp $(, $rest_exp)*],
+            })
         }
     };
 }
 
-/// Matches a parser zero or more times, returning a vector of the results.
+/// Matches a parser zero or more times. Returns `Vec<T>`.
 macro_rules! many {
     ($self:ident: $parser:ident) => {{
         let mut results = Vec::new();
 
         loop {
-            let result = try_parse!($self: $parser);
-            if let Ok(result) = result {
-                results.push(result);
-            } else {
-                break;
+            match try_parse!($self: $parser) {
+                Some(result) => results.push(result),
+                _ => break,
             }
         }
 
@@ -124,9 +129,9 @@ macro_rules! many {
     }};
 }
 
-/// Matches a token, returning it if it succeeds, or an error if it fails.
+/// Matches a token.
 macro_rules! token {
-    ($name:literal; $self:ident: $($token:pat => $result:expr),*) => {{
+    ($name:literal; $self:ident: $($token:pat => $result:expr),*) => {
         match $self.lexer.peek() {
             $($token => {
                 $self.lexer.next();
@@ -136,31 +141,30 @@ macro_rules! token {
                 expected: &[$name],
             }),
         }
-    }};
+    };
 }
 
-/// Tries to match a token, returning `Some(token)` if it succeeds, or `None` if it fails.
+/// Tries to match a token. Returns `Option<Token>`.
 macro_rules! try_token {
-    ($self:ident: $token:pat) => {{
+    ($self:ident: $token:pat) => {
         match $self.lexer.peek() {
             $token => Some($self.lexer.next()),
             _ => None,
         }
-    }};
+    };
 }
 
 /// Expects a token and throws error if it fails.
 macro_rules! expect_token {
-    ($self:ident: $token:pat) => {{
-        if let $token = $self.lexer.peek() {
-            $self.lexer.next();
-        } else {
-            return Err(PError::ParseError);
+    ($self:ident: $token:pat) => {
+        match $self.lexer.peek() {
+            $token => $self.lexer.next(),
+            _ => return Err(PError::ParseError),
         }
-    }};
+    };
 }
 
-/// Matches a token zero or more times, returning a vector of the results.
+/// Matches a token zero or more times. Returns `Vec<Token>`.
 macro_rules! many_token {
     ($self:ident: $token:pat) => {{
         let mut results = Vec::new();
@@ -249,11 +253,11 @@ impl Parser {
     }
 
     fn parse_program(&mut self) -> PResult {
-        many_token!(self: Token::Newline { .. });
+        many!(self: parse_newline);
 
         let body = sep!(self: parse_stmt / parse_newline);
 
-        many_token!(self: Token::Newline { .. });
+        many!(self: parse_newline);
 
         let range = (0, body.last().map(|stmt| stmt.range().1).unwrap_or(0));
 
@@ -263,8 +267,18 @@ impl Parser {
     fn parse_stmt(&mut self) -> PResult {
         any!(
             "function declaration", "expression";
-            self: parse_func_decl | parse_expr
+            self: parse_func_decl | parse_expr_stmt
         )
+    }
+
+    fn parse_expr_stmt(&mut self) -> PResult {
+        let expr = self.parse_func_call()?;
+        let range = expr.range();
+
+        Ok(AstNode::ExprStmt {
+            expr: Box::new(expr),
+            range,
+        })
     }
 
     fn parse_func_decl(&mut self) -> PResult {
@@ -288,7 +302,6 @@ impl Parser {
         expect_token!(self: Token::AssignmentArrow { .. });
 
         let body = Box::new(self.parse_expr()?);
-
         let range = (range_start, body.range().1);
 
         Ok(AstNode::FuncDecl {
@@ -304,6 +317,35 @@ impl Parser {
             "identifier", "string", "number";
             self: parse_identifier | parse_string | parse_number
         )
+    }
+
+    fn parse_func_call(&mut self) -> PResult {
+        let id = self.parse_identifier()?;
+        let range = id.range();
+
+        let mut current = AstNode::FuncCall {
+            callee: Box::new(id),
+            arg: None,
+            range,
+        };
+
+        loop {
+            let result = try_parse!(self: parse_expr);
+            if result.is_none() {
+                break;
+            }
+
+            let arg = result.unwrap();
+            let range = (current.range().0, arg.range().1);
+
+            current = AstNode::FuncCall {
+                callee: Box::new(current),
+                arg: Some(Box::new(arg.clone())),
+                range,
+            };
+        }
+
+        Ok(current)
     }
 
     fn parse_identifier(&mut self) -> PResult {
@@ -345,7 +387,7 @@ impl Parser {
                 }
 
                 token! {
-                    "number";
+                    "fraction";
                     self: Token::Number { value: fraction, span: f_span } => {
                         let number = format!("{}.{}", whole, fraction);
                         Ok(AstNode::NumLit {

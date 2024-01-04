@@ -4,28 +4,32 @@ mod scanner;
 
 fn main() {
     let example = r#"
-    hello 8 "Hello, world!"
-"#
-    .trim();
+greet name -> $"Hello, {name}!"
+greet
+"#;
 
     let mut lexer = lexer::Lexer::new(example);
     lexer.lex().expect("failed to lex input");
 
-    println!("--- Tokens:");
-
     let mut lexer_copy = lexer.clone();
-    loop {
-        let token = lexer_copy.next();
-        print!("{:?}\n", token);
-
-        if token == lexer::Token::EOF {
-            break;
-        }
-    }
 
     let mut parser = parser::Parser::new(lexer);
-    let ast = parser.parse().expect("failed to parse input");
+    let ast = parser.parse();
+    if let Err(err) = ast {
+        println!("--- Tokens:");
+        loop {
+            let token = lexer_copy.next();
+            print!("{:#?}\n", token);
+
+            if token == lexer::Token::EOF {
+                break;
+            }
+        }
+
+        println!("\n{}", parser.display_error(err).unwrap());
+        return;
+    }
 
     println!("\n--- AST:");
-    println!("{:#?}", ast);
+    println!("{:#?}", ast.unwrap());
 }
