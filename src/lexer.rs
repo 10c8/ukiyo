@@ -644,7 +644,17 @@ impl Lexer {
         Ok(())
     }
 
-    /// Returns the line at the given index.
+    /// Returns the current cursor position.
+    pub fn cursor(&self) -> usize {
+        self.cursor
+    }
+
+    /// Sets the cursor position.
+    pub fn set_cursor(&mut self, cursor: usize) {
+        self.cursor = cursor;
+    }
+
+    /// Returns the line of code at the given index.
     pub fn code_line(&self, line: usize) -> &str {
         &self.lines[line - 1]
     }
