@@ -664,6 +664,14 @@ impl Lexer {
         self.tokens.get(self.cursor).copied().unwrap_or(Token::EOF)
     }
 
+    /// Returns the token at the given cursor position.
+    pub fn peek_nth(&mut self, n: usize) -> Token {
+        self.tokens
+            .get(self.cursor + n)
+            .copied()
+            .unwrap_or(Token::EOF)
+    }
+
     /// Returns the token at the current cursor position and advances the cursor.
     pub fn next(&mut self) -> Token {
         let token = self.tokens.get(self.cursor).copied().unwrap_or(Token::EOF);

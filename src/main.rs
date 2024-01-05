@@ -4,9 +4,11 @@ mod scanner;
 
 fn main() {
     let example = r#"
-greet name -> $"Hello, {name}!"
-greet "world"
-list -> [1, "2", three]
+flavors -> {
+    "fruit"     = ["sweet", "sour", "bitter"],
+    "vegetable" = ["bitter", "salty", "umami"],
+    "meat"      = ["salty", "umami", "sweet"],
+}
 "#;
 
     let mut lexer = lexer::Lexer::new(example);

@@ -42,6 +42,11 @@ pub enum AstNode<'a> {
         items: Vec<AstNode<'a>>,
         range: Range,
     },
+    Record {
+        keys: Vec<AstNode<'a>>,
+        values: Vec<AstNode<'a>>,
+        range: Range,
+    },
 }
 
 impl<'a> AstNode<'a> {
@@ -54,7 +59,8 @@ impl<'a> AstNode<'a> {
             | AstNode::Ident { range, .. }
             | AstNode::StrLit { range, .. }
             | AstNode::NumLit { range, .. }
-            | AstNode::List { range, .. } => *range,
+            | AstNode::List { range, .. }
+            | AstNode::Record { range, .. } => *range,
         }
     }
 }
@@ -69,12 +75,45 @@ pub enum PError {
     Cut(Box<PError>, Token),
 }
 
+/// Runs a parser, propagating unrecoverable errors. (For internal use by macros.)
+macro_rules! parse_cut {
+    ($self:ident: $parser:ident) => {{
+        let cursor = $self.lexer.cursor();
+        match $self.$parser() {
+            Ok(success) => Ok(success),
+            Err(err) => {
+                if let PError::Cut(_, _) = err {
+                    // Unrecoverable error, propagate it
+                    $self.set_cut_error(Some(err));
+                    return Err(PError::ParseError);
+                }
+
+                $self.lexer.set_cursor(cursor);
+                Err(err)
+            }
+        }
+    }};
+}
+
 /// Transforms a recoverable error into an unrecoverable one.
 macro_rules! cut {
     ($self:ident: $parser:ident) => {
         match $self.$parser() {
             Ok(success) => Ok(success),
+            Err(PError::Cut(inner, span)) => Err(PError::Cut(inner, span)),
             Err(err) => Err(PError::Cut(Box::new(err), $self.lexer.peek())),
+        }
+    };
+}
+
+/// Matches the next token against a pattern. On success, returns `Token`.
+macro_rules! token {
+    ($name:literal; $self:ident: $token:pat) => {
+        match $self.lexer.peek() {
+            $token => Ok($self.lexer.next()),
+            _ => {
+                return Err(PError::SyntaxError { expected: &[$name] });
+            }
         }
     };
 }
@@ -87,13 +126,7 @@ macro_rules! opt {
         let cursor = $self.lexer.cursor();
         match $self.$parser() {
             Ok(success) => Some(success),
-            Err(err) => {
-                if let PError::Cut(_, _) = err {
-                    // Unrecoverable error, propagate it
-                    $self.set_cut_error(Some(err));
-                    return Err(PError::ParseError);
-                }
-
+            Err(_) => {
                 $self.lexer.set_cursor(cursor);
                 None
             }
@@ -107,38 +140,56 @@ macro_rules! opt {
     };
 }
 
+/// Similar to `opt!`, but does not consume the result.
+macro_rules! peek {
+    ($self:ident: $parser:ident) => {{
+        let cursor = $self.lexer.cursor();
+
+        let result = $self.$parser();
+
+        $self.lexer.set_cursor(cursor);
+
+        if result.is_err() {
+            Err(result.err().unwrap())
+        } else {
+            Ok(result.ok().unwrap())
+        }
+    }};
+    ($n:expr, $self:ident: $token:pat) => {
+        match $self.lexer.peek_nth($n) {
+            $token => Some($self.lexer.peek()),
+            _ => None,
+        }
+    };
+}
+
 /// Tries a list of parsers and stops on the first success.
 macro_rules! any {
-    ($self:ident: $first:ident, $first_exp:literal $(| $rest:ident, $rest_exp:literal )*) => {
-        if let Some(success) = opt!($self: $first) {
+    ($self:ident: $first:ident, $first_exp:literal $(| $rest:ident, $rest_exp:literal )*) => {{
+        if let Ok(success) = parse_cut!($self: $first) {
             Ok(success)
-        } $(else if let Some(success) = opt!($self: $rest) {
+        } $(else if let Ok(success) = parse_cut!($self: $rest) {
             Ok(success)
         })* else {
             Err(PError::SyntaxError {
                 expected: &[$first_exp $(, $rest_exp)*],
             })
         }
-    };
+    }};
 }
 
-/// Matches a parser `n` times, separated by another parser. On success, returns `Vec<T>`.
+/// Matches a parser or token `n` times, separated by another parser or token. On success, returns `Vec<T>`.
 macro_rules! sep {
     ($n:expr, $self:ident: $parser:ident / $sep:ident) => {{
         let mut results = Vec::new();
-        let mut error = None;
 
         loop {
-            let cursor = $self.lexer.cursor();
-
-            match $self.$parser() {
-                Ok(success) => results.push(success),
-                Err(err) => {
-                    $self.lexer.set_cursor(cursor);
-                    error = Some(err);
-                    break;
-                }
+            let result = parse_cut!($self: $parser);
+            if result.is_err() {
+                break;
             }
+
+            results.push(result.unwrap());
 
             if opt!($self: $sep).is_none() {
                 break;
@@ -146,26 +197,21 @@ macro_rules! sep {
         }
 
         if !$n.contains(&results.len()) {
-            return Err(error.unwrap());
+            return Err(PError::ParseError);
         }
 
         Ok(results)
     }};
     ($n:expr, $self:ident: $parser:ident / $sep:pat) => {{
         let mut results = Vec::new();
-        let mut error = None;
 
         loop {
-            let cursor = $self.lexer.cursor();
-
-            match $self.$parser() {
-                Ok(success) => results.push(success),
-                Err(err) => {
-                    $self.lexer.set_cursor(cursor);
-                    error = Some(err);
-                    break;
-                }
+            let result = parse_cut!($self: $parser);
+            if result.is_err() {
+                break;
             }
+
+            results.push(result.unwrap());
 
             match $self.lexer.peek() {
                 $sep => {
@@ -176,101 +222,22 @@ macro_rules! sep {
         }
 
         if !$n.contains(&results.len()) {
-            return Err(error.unwrap());
+            return Err(PError::ParseError);
         }
 
         Ok(results)
     }};
 }
 
-/// Matches a parser `n` times, delimited by other parsers. On success, returns `(T, Vec<T>, T)`.
-macro_rules! delim {
-    ($self:ident: $left:ident, $parser:ident, $right:ident) => {{
-        let start = $self.$left()?;
-
-        let result = match $self.$parser() {
-            Ok(success) => success,
-            Err(err) => {
-                // Unrecoverable error, propagate it
-                $self.set_cut_error(Some(err));
-                return Err(PError::ParseError);
-            }
-        };
-
-        let end = $self.$right();
-        if end.is_err() {
-            // Unrecoverable error, propagate it
-            $self.set_cut_error(end.err());
-            return Err(PError::ParseError);
-        }
-
-        Ok((start, result, end.unwrap()))
-    }};
-    ($self:ident: $left:pat, $parser:ident, $right:pat) => {{
-        let start = match $self.lexer.peek() {
-            $left => $self.lexer.next(),
-            _ => {
-                return Err(PError::ParseError);
-            }
-        };
-
-        let result = match $self.$parser() {
-            Ok(success) => success,
-            Err(err) => {
-                // Unrecoverable error, propagate it
-                $self.set_cut_error(Some(err));
-                return Err(PError::ParseError);
-            }
-        };
-
-        let end = match $self.lexer.peek() {
-            $right => $self.lexer.next(),
-            _ => {
-                // Unrecoverable error, propagate it
-                let tok = $self.lexer.peek();
-                $self.set_cut_error(Some(PError::Cut(Box::new(PError::ParseError), tok)));
-                return Err(PError::ParseError);
-            }
-        };
-
-        Ok((start, result, end))
-    }};
-    ($self:ident: $left:ident, $token:pat, $right:ident) => {{
-        let start = $self.$left()?;
-
-        let result = match $self.lexer.peek() {
-            $token => $self.lexer.next(),
-            _ => {
-                let tok = $self.lexer.peek();
-                $self.set_cut_error(Some(PError::Cut(Box::new(PError::ParseError), tok)));
-                return Err(PError::ParseError);
-            }
-        };
-
-        let end = $self.$right();
-        if end.is_err() {
-            // Unrecoverable error, propagate it
-            $self.set_cut_error(end.err());
-            return Err(PError::ParseError);
-        }
-
-        Ok((start, result, end.unwrap()))
-    }};
-}
-
-/// Matches a parser `n` times. On success, returns `Vec<T>`.
+/// Matches a parser or token `n` times. On success, returns `Vec<T>`.
 macro_rules! many {
     ($n:expr, $self:ident: $parser:ident) => {{
         let mut results = Vec::new();
 
         loop {
-            let cursor = $self.lexer.cursor();
-            match $self.$parser() {
-                Ok(success) => results.push(success),
-                Err(_) => {
-                    $self.lexer.set_cursor(cursor);
-                    break;
-                }
+            let result = parse_cut!($self: $parser).map(|success| results.push(success));
+            if result.is_err() {
+                break;
             }
         }
 
@@ -300,7 +267,7 @@ macro_rules! many {
     }};
 }
 
-/// Matches a token.
+/// Matches the next token against a pattern and maps it to a result.
 macro_rules! map {
     ($self:ident: $($token:pat, $name:literal => $result:expr),*) => {
         match $self.lexer.peek() {
@@ -399,8 +366,16 @@ impl Parser {
 
     fn set_cut_error(&mut self, err: Option<PError>) {
         if self.cut_error.is_none() {
-            println!("cut error: {:?}", err);
             self.cut_error = err;
+        }
+    }
+
+    /// Transforms a recoverable error into an unrecoverable one.
+    fn cut<T>(&mut self, result: Result<T, PError>) -> Result<T, PError> {
+        match result {
+            Ok(success) => Ok(success),
+            Err(PError::Cut(inner, span)) => Err(PError::Cut(inner, span)),
+            Err(err) => Err(PError::Cut(Box::new(err), self.lexer.peek())),
         }
     }
 
@@ -420,15 +395,15 @@ impl Parser {
     }
 
     fn parse_program(&mut self) -> PResult {
-        let (_, body, _) = delim!(self: ignore_nl, parse_program_body, ignore_nl)?;
+        self.ignore_nl()?;
+
+        let body = sep!(0.., self: parse_stmt / Token::Newline { .. })?;
+
+        self.ignore_nl()?;
 
         let range = (0, body.last().map(|stmt| stmt.range().1).unwrap_or(0));
 
         Ok(AstNode::Prog { body, range })
-    }
-
-    fn parse_program_body(&mut self) -> Result<Vec<AstNode<'static>>, PError> {
-        sep!(1.., self: parse_stmt / Token::Newline { .. })
     }
 
     fn parse_stmt(&mut self) -> PResult {
@@ -439,13 +414,65 @@ impl Parser {
     }
 
     fn parse_expr_stmt(&mut self) -> PResult {
-        let expr = self.parse_func_call()?;
+        let expr = any! {
+            self: parse_func_call, "function call"
+                | parse_expr, "expression"
+        }?;
         let range = expr.range();
 
         Ok(AstNode::ExprStmt {
             expr: Box::new(expr),
             range,
         })
+    }
+
+    fn parse_par_expr(&mut self) -> PResult {
+        let start = token!("\"(\""; self: Token::Symbol { value: '(', .. })?;
+
+        self.ignore_nl_and_ws()?;
+
+        let expr = any! {
+            self: parse_func_call, "function call"
+                | parse_expr, "expression"
+        };
+        let expr = self.cut(expr)?;
+
+        self.ignore_nl_and_ws()?;
+
+        let end = token!("\")\""; self: Token::Symbol { value: ')', .. })?;
+
+        let expr = match expr {
+            AstNode::FuncCall { callee, arg, .. } => AstNode::FuncCall {
+                callee,
+                arg,
+                range: (start.span().range.0, end.span().range.1),
+            },
+            AstNode::Ident { name, .. } => AstNode::Ident {
+                name,
+                range: (start.span().range.0, end.span().range.1),
+            },
+            AstNode::StrLit { value, .. } => AstNode::StrLit {
+                value,
+                format: false,
+                range: (start.span().range.0, end.span().range.1),
+            },
+            AstNode::NumLit { value, .. } => AstNode::NumLit {
+                value,
+                range: (start.span().range.0, end.span().range.1),
+            },
+            AstNode::List { items, .. } => AstNode::List {
+                items,
+                range: (start.span().range.0, end.span().range.1),
+            },
+            AstNode::Record { keys, values, .. } => AstNode::Record {
+                keys,
+                values,
+                range: (start.span().range.0, end.span().range.1),
+            },
+            _ => expr,
+        };
+
+        Ok(expr)
     }
 
     fn parse_func_decl(&mut self) -> PResult {
@@ -486,6 +513,8 @@ impl Parser {
                 | parse_string, "string"
                 | parse_number, "number"
                 | parse_list, "list"
+                | parse_record, "record"
+                | parse_par_expr, "expression"
         }
     }
 
@@ -577,7 +606,13 @@ impl Parser {
     }
 
     fn parse_list(&mut self) -> PResult {
-        let (start, items, end) = delim!(self: parse_list_start, parse_list_items, parse_list_end)?;
+        let start = token!("\"[\""; self: Token::Symbol { value: '[', .. })?;
+
+        self.ignore_nl_and_ws()?;
+
+        let items = cut!(self: parse_list_items)?;
+
+        let end = self.parse_list_end()?;
 
         Ok(AstNode::List {
             items,
@@ -585,28 +620,111 @@ impl Parser {
         })
     }
 
-    fn parse_list_start(&mut self) -> Result<Token, PError> {
-        let (_, token, _) = delim! {
-            self: ignore_nl_and_ws, Token::Symbol { value: '[', .. }, ignore_nl_and_ws
-        }?;
-        Ok(token)
+    fn parse_list_end(&mut self) -> Result<Token, PError> {
+        self.ignore_nl_and_ws()?;
+
+        token!("\"]\""; self: Token::Symbol { value: ']', .. })
     }
 
     fn parse_list_items(&mut self) -> Result<Vec<AstNode<'static>>, PError> {
-        sep!(0.., self: parse_expr / parse_list_sep)
+        let mut items = Vec::new();
+
+        if peek!(0, self: Token::Symbol { value: ']', .. }).is_some() {
+            return Ok(items);
+        }
+
+        loop {
+            items.push(cut!(self: parse_expr)?);
+
+            if opt!(self: parse_list_record_sep).is_some() {
+                if peek!(self: parse_list_end).is_ok() {
+                    break;
+                }
+            } else {
+                if peek!(self: parse_list_end).is_ok() {
+                    break;
+                }
+
+                return Err(PError::SyntaxError {
+                    expected: &["\",\"", "\"]\""],
+                });
+            }
+        }
+
+        Ok(items)
     }
 
-    fn parse_list_sep(&mut self) -> Result<(), PError> {
-        delim! {
-            self: ignore_nl_and_ws, Token::Symbol { value: ',', .. }, ignore_nl_and_ws
-        }?;
+    fn parse_record(&mut self) -> PResult {
+        let start = token!("\"{\""; self: Token::Symbol { value: '{', .. })?;
+
+        self.ignore_nl_and_ws()?;
+
+        let (keys, values) = cut!(self: parse_record_items)?;
+
+        self.ignore_nl_and_ws()?;
+
+        let end = self.parse_record_end()?;
+
+        Ok(AstNode::Record {
+            keys,
+            values,
+            range: (start.span().range.0, end.span().range.1),
+        })
+    }
+
+    fn parse_record_end(&mut self) -> Result<Token, PError> {
+        self.ignore_nl_and_ws()?;
+
+        token!("\"}\""; self: Token::Symbol { value: '}', .. })
+    }
+
+    fn parse_record_items(
+        &mut self,
+    ) -> Result<(Vec<AstNode<'static>>, Vec<AstNode<'static>>), PError> {
+        let mut keys = Vec::new();
+        let mut values = Vec::new();
+
+        if peek!(0, self: Token::Symbol { value: '}', .. }).is_some() {
+            return Ok((keys, values));
+        }
+
+        loop {
+            let key = cut!(self: parse_string)?;
+
+            let eq = token!("\"=\""; self: Token::Symbol { value: '=', .. });
+            self.cut(eq)?;
+
+            let value = cut!(self: parse_expr)?;
+
+            keys.push(key);
+            values.push(value);
+
+            if opt!(self: parse_list_record_sep).is_some() {
+                if peek!(self: parse_record_end).is_ok() {
+                    break;
+                }
+            } else {
+                if peek!(self: parse_record_end).is_ok() {
+                    break;
+                }
+
+                return Err(PError::SyntaxError {
+                    expected: &["\",\"", "\"}\""],
+                });
+            }
+        }
+
+        Ok((keys, values))
+    }
+
+    fn parse_list_record_sep(&mut self) -> Result<(), PError> {
+        self.ignore_nl_and_ws()?;
+
+        let comma = token!("\",\""; self: Token::Symbol { value: ',', .. });
+        self.cut(comma)?;
+
+        self.ignore_nl_and_ws()?;
+
         Ok(())
-    }
-
-    fn parse_list_end(&mut self) -> Result<Token, PError> {
-        let (_, token, _) = delim! {
-            self: ignore_nl_and_ws, Token::Symbol { value: ']', .. }, ignore_nl_and_ws
-        }?;
-        Ok(token)
     }
 }
