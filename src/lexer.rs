@@ -101,8 +101,8 @@ impl Token {
             | Token::Indent { span, .. }
             | Token::Dedent { span, .. } => *span,
             Token::EOF => Span {
-                line: 0,
-                column: 0,
+                line: 1,
+                column: 1,
                 range: (0, 0),
             },
         }

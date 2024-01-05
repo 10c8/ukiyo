@@ -5,7 +5,7 @@ mod scanner;
 fn main() {
     let example = r#"
 greet name -> $"Hello, {name}!"
-greet
+greet "world"
 "#;
 
     let mut lexer = lexer::Lexer::new(example);
