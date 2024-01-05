@@ -6,6 +6,7 @@ fn main() {
     let example = r#"
 greet name -> $"Hello, {name}!"
 greet "world"
+list -> [1, "2", three]
 "#;
 
     let mut lexer = lexer::Lexer::new(example);

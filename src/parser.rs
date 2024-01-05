@@ -38,6 +38,10 @@ pub enum AstNode<'a> {
         value: f64,
         range: Range,
     },
+    List {
+        items: Vec<AstNode<'a>>,
+        range: Range,
+    },
 }
 
 impl<'a> AstNode<'a> {
@@ -49,7 +53,8 @@ impl<'a> AstNode<'a> {
             | AstNode::FuncCall { range, .. }
             | AstNode::Ident { range, .. }
             | AstNode::StrLit { range, .. }
-            | AstNode::NumLit { range, .. } => *range,
+            | AstNode::NumLit { range, .. }
+            | AstNode::List { range, .. } => *range,
         }
     }
 }
@@ -61,7 +66,7 @@ pub enum PError {
     ParseError,
     SyntaxError { expected: &'static [&'static str] },
 
-    Cut(Box<PError>, Span),
+    Cut(Box<PError>, Token),
 }
 
 /// Transforms a recoverable error into an unrecoverable one.
@@ -69,7 +74,7 @@ macro_rules! cut {
     ($self:ident: $parser:ident) => {
         match $self.$parser() {
             Ok(success) => Ok(success),
-            Err(err) => Err(PError::Cut(Box::new(err), $self.lexer.peek().span())),
+            Err(err) => Err(PError::Cut(Box::new(err), $self.lexer.peek())),
         }
     };
 }
@@ -85,12 +90,11 @@ macro_rules! opt {
             Err(err) => {
                 if let PError::Cut(_, _) = err {
                     // Unrecoverable error, propagate it
-                    $self.set_last_error(Some(err), true);
+                    $self.set_cut_error(Some(err));
                     return Err(PError::ParseError);
                 }
 
                 $self.lexer.set_cursor(cursor);
-                $self.set_last_error(Some(err), false);
                 None
             }
         }
@@ -126,11 +130,11 @@ macro_rules! sep {
 
         loop {
             let cursor = $self.lexer.cursor();
+
             match $self.$parser() {
                 Ok(success) => results.push(success),
                 Err(err) => {
                     $self.lexer.set_cursor(cursor);
-                    $self.set_last_error(Some(err.clone()), false);
                     error = Some(err);
                     break;
                 }
@@ -147,6 +151,111 @@ macro_rules! sep {
 
         Ok(results)
     }};
+    ($n:expr, $self:ident: $parser:ident / $sep:pat) => {{
+        let mut results = Vec::new();
+        let mut error = None;
+
+        loop {
+            let cursor = $self.lexer.cursor();
+
+            match $self.$parser() {
+                Ok(success) => results.push(success),
+                Err(err) => {
+                    $self.lexer.set_cursor(cursor);
+                    error = Some(err);
+                    break;
+                }
+            }
+
+            match $self.lexer.peek() {
+                $sep => {
+                    $self.lexer.next();
+                }
+                _ => break
+            }
+        }
+
+        if !$n.contains(&results.len()) {
+            return Err(error.unwrap());
+        }
+
+        Ok(results)
+    }};
+}
+
+/// Matches a parser `n` times, delimited by other parsers. On success, returns `(T, Vec<T>, T)`.
+macro_rules! delim {
+    ($self:ident: $left:ident, $parser:ident, $right:ident) => {{
+        let start = $self.$left()?;
+
+        let result = match $self.$parser() {
+            Ok(success) => success,
+            Err(err) => {
+                // Unrecoverable error, propagate it
+                $self.set_cut_error(Some(err));
+                return Err(PError::ParseError);
+            }
+        };
+
+        let end = $self.$right();
+        if end.is_err() {
+            // Unrecoverable error, propagate it
+            $self.set_cut_error(end.err());
+            return Err(PError::ParseError);
+        }
+
+        Ok((start, result, end.unwrap()))
+    }};
+    ($self:ident: $left:pat, $parser:ident, $right:pat) => {{
+        let start = match $self.lexer.peek() {
+            $left => $self.lexer.next(),
+            _ => {
+                return Err(PError::ParseError);
+            }
+        };
+
+        let result = match $self.$parser() {
+            Ok(success) => success,
+            Err(err) => {
+                // Unrecoverable error, propagate it
+                $self.set_cut_error(Some(err));
+                return Err(PError::ParseError);
+            }
+        };
+
+        let end = match $self.lexer.peek() {
+            $right => $self.lexer.next(),
+            _ => {
+                // Unrecoverable error, propagate it
+                let tok = $self.lexer.peek();
+                $self.set_cut_error(Some(PError::Cut(Box::new(PError::ParseError), tok)));
+                return Err(PError::ParseError);
+            }
+        };
+
+        Ok((start, result, end))
+    }};
+    ($self:ident: $left:ident, $token:pat, $right:ident) => {{
+        let start = $self.$left()?;
+
+        let result = match $self.lexer.peek() {
+            $token => $self.lexer.next(),
+            _ => {
+                let tok = $self.lexer.peek();
+                $self.set_cut_error(Some(PError::Cut(Box::new(PError::ParseError), tok)));
+                return Err(PError::ParseError);
+            }
+        };
+
+        let end = $self.$right();
+        if end.is_err() {
+            // Unrecoverable error, propagate it
+            $self.set_cut_error(end.err());
+            return Err(PError::ParseError);
+        }
+
+        Ok((start, result, end.unwrap()))
+    }};
 }
 
 /// Matches a parser `n` times. On success, returns `Vec<T>`.
@@ -158,11 +267,28 @@ macro_rules! many {
             let cursor = $self.lexer.cursor();
             match $self.$parser() {
                 Ok(success) => results.push(success),
-                Err(err) => {
+                Err(_) => {
                     $self.lexer.set_cursor(cursor);
-                    $self.set_last_error(Some(err), false);
                     break;
                 }
+            }
+        }
+
+        if !$n.contains(&results.len()) {
+            return Err(PError::ParseError);
+        }
+
+        Ok(results)
+    }};
+    ($n:expr, $self:ident: $token:pat) => {{
+        let mut results = Vec::new();
+
+        loop {
+            match $self.lexer.peek() {
+                $token => {
+                    results.push($self.lexer.next());
+                }
+                _ => break,
             }
         }
 
@@ -175,7 +301,7 @@ macro_rules! many {
 }
 
 /// Matches a token.
-macro_rules! token {
+macro_rules! map {
     ($self:ident: $($token:pat, $name:literal => $result:expr),*) => {
         match $self.lexer.peek() {
             $($token => {
@@ -191,16 +317,14 @@ macro_rules! token {
 
 pub struct Parser {
     lexer: Lexer,
-    cut: bool,
-    last_error: Option<PError>,
+    cut_error: Option<PError>,
 }
 
 impl Parser {
     pub fn new(lexer: Lexer) -> Self {
         Parser {
             lexer,
-            cut: false,
-            last_error: None,
+            cut_error: None,
         }
     }
 
@@ -214,18 +338,21 @@ impl Parser {
         Ok(program)
     }
 
-    pub fn display_error(&mut self, err: PError) -> Result<String, std::fmt::Error> {
+    pub fn display_error(&mut self, error: PError) -> Result<String, std::fmt::Error> {
         let mut msg = String::new();
 
-        let next = self.lexer.peek();
-        let mut span = next.span();
-        let mut err = err;
+        let tok;
+        let span;
+        let err;
 
-        if self.cut {
-            if let Some(PError::Cut(inner_err, inner_span)) = self.last_error.take() {
-                err = *inner_err;
-                span = inner_span;
-            }
+        if let Some(PError::Cut(inner_err, inner_tok)) = self.cut_error.take() {
+            tok = inner_tok;
+            span = inner_tok.span();
+            err = *inner_err;
+        } else {
+            tok = self.lexer.peek();
+            span = tok.span();
+            err = error;
         }
 
         let line = span.line;
@@ -238,7 +365,7 @@ impl Parser {
                 write!(&mut msg, "Parsing Error @ {}:{}\n", line, column)?;
                 self.display_error_line(&mut msg, line, column, start, end);
 
-                write!(&mut msg, "Unexpected {}.", next.to_string())?;
+                write!(&mut msg, "Unexpected {}.", tok.to_string())?;
             }
             PError::SyntaxError { expected } => {
                 write!(&mut msg, "Syntax Error @ {}:{}\n", line, column)?;
@@ -270,27 +397,38 @@ impl Parser {
         write!(msg, "{}\n", "^".repeat(end - start)).unwrap();
     }
 
-    fn set_last_error(&mut self, err: Option<PError>, cut: bool) {
-        if !self.cut || self.last_error.is_none() {
-            self.last_error = err;
-            self.cut = cut;
+    fn set_cut_error(&mut self, err: Option<PError>) {
+        if self.cut_error.is_none() {
+            println!("cut error: {:?}", err);
+            self.cut_error = err;
         }
     }
 
-    fn parse_newline(&mut self) -> Result<(), PError> {
-        token!(self: Token::Newline { .. }, "newline" => ())
+    fn ignore_nl(&mut self) -> Result<(), PError> {
+        many!(0.., self: Token::Newline { .. })?;
+        Ok(())
+    }
+
+    // fn ignore_ws(&mut self) -> Result<(), PError> {
+    //     many!(0.., self: Token::Indent { .. } | Token::Dedent { .. })?;
+    //     Ok(())
+    // }
+
+    fn ignore_nl_and_ws(&mut self) -> Result<(), PError> {
+        many!(0.., self: Token::Newline { .. } | Token::Indent { .. } | Token::Dedent { .. })?;
+        Ok(())
     }
 
     fn parse_program(&mut self) -> PResult {
-        many!(0.., self: parse_newline)?;
-
-        let body = sep!(1.., self: parse_stmt / parse_newline)?;
-
-        many!(0.., self: parse_newline)?;
+        let (_, body, _) = delim!(self: ignore_nl, parse_program_body, ignore_nl)?;
 
         let range = (0, body.last().map(|stmt| stmt.range().1).unwrap_or(0));
 
         Ok(AstNode::Prog { body, range })
+    }
+
+    fn parse_program_body(&mut self) -> Result<Vec<AstNode<'static>>, PError> {
+        sep!(1.., self: parse_stmt / Token::Newline { .. })
     }
 
     fn parse_stmt(&mut self) -> PResult {
@@ -328,7 +466,7 @@ impl Parser {
 
         let params = many!(0.., self: parse_identifier)?;
 
-        token!(self: Token::AssignmentArrow { .. }, "->" => { })?;
+        map!(self: Token::AssignmentArrow { .. }, "->" => { })?;
 
         let body = cut!(self: parse_expr)?;
 
@@ -347,6 +485,7 @@ impl Parser {
             self: parse_identifier, "identifier"
                 | parse_string, "string"
                 | parse_number, "number"
+                | parse_list, "list"
         }
     }
 
@@ -385,7 +524,7 @@ impl Parser {
     }
 
     fn parse_identifier(&mut self) -> PResult {
-        token! {
+        map! {
             self: Token::Identifier { name, span }, "identifier" => {
                 AstNode::Ident {
                     name,
@@ -412,28 +551,62 @@ impl Parser {
     }
 
     fn parse_string_part(&mut self) -> Result<(&'static str, Span), PError> {
-        token!(self: Token::String { value, span }, "string" => (value, span))
+        map!(self: Token::String { value, span }, "string" => (value, span))
     }
 
     fn parse_number(&mut self) -> PResult {
-        let whole = self.parse_number_part()?;
+        let (whole, whole_span) = self.parse_number_part()?;
 
         if opt!(self: Token::Symbol { value: '.', .. }).is_none() {
             return Ok(AstNode::NumLit {
                 value: whole as f64,
-                range: (0, 0),
+                range: whole_span.range,
             });
         }
 
-        let fraction = cut!(self: parse_number_part)?;
+        let (fraction, fraction_span) = cut!(self: parse_number_part)?;
 
         Ok(AstNode::NumLit {
             value: format!("{}.{}", whole, fraction).parse::<f64>().unwrap(),
-            range: (0, 0),
+            range: (whole_span.range.0, fraction_span.range.1),
         })
     }
 
-    fn parse_number_part(&mut self) -> Result<u64, PError> {
-        token!(self: Token::Number { value, .. }, "number" => value)
+    fn parse_number_part(&mut self) -> Result<(u64, Span), PError> {
+        map!(self: Token::Number { value, span }, "number" => (value, span))
+    }
+
+    fn parse_list(&mut self) -> PResult {
+        let (start, items, end) = delim!(self: parse_list_start, parse_list_items, parse_list_end)?;
+
+        Ok(AstNode::List {
+            items,
+            range: (start.span().range.0, end.span().range.1),
+        })
+    }
+
+    fn parse_list_start(&mut self) -> Result<Token, PError> {
+        let (_, token, _) = delim! {
+            self: ignore_nl_and_ws, Token::Symbol { value: '[', .. }, ignore_nl_and_ws
+        }?;
+        Ok(token)
+    }
+
+    fn parse_list_items(&mut self) -> Result<Vec<AstNode<'static>>, PError> {
+        sep!(0.., self: parse_expr / parse_list_sep)
+    }
+
+    fn parse_list_sep(&mut self) -> Result<(), PError> {
+        delim! {
+            self: ignore_nl_and_ws, Token::Symbol { value: ',', .. }, ignore_nl_and_ws
+        }?;
+        Ok(())
+    }
+
+    fn parse_list_end(&mut self) -> Result<Token, PError> {
+        let (_, token, _) = delim! {
+            self: ignore_nl_and_ws, Token::Symbol { value: ']', .. }, ignore_nl_and_ws
+        }?;
+        Ok(token)
     }
 }
