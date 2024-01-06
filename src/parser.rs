@@ -5,6 +5,13 @@ use crate::lexer::*;
 type Range = (usize, usize);
 
 #[derive(Debug, Clone, PartialEq)]
+pub enum CasePatternKind {
+    Empty,
+    Expr,
+    Or,
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub enum AstNode<'a> {
     Prog {
         body: Vec<AstNode<'a>>,
@@ -22,6 +29,21 @@ pub enum AstNode<'a> {
         id: Option<Box<AstNode<'a>>>,
         params: Vec<AstNode<'a>>,
         body: Box<AstNode<'a>>,
+        range: Range,
+    },
+    Case {
+        expr: Box<AstNode<'a>>,
+        cases: Vec<AstNode<'a>>,
+        range: Range,
+    },
+    CaseBranch {
+        pattern: Box<AstNode<'a>>,
+        body: Box<AstNode<'a>>,
+        range: Range,
+    },
+    CasePattern {
+        kind: CasePatternKind,
+        expr: Box<AstNode<'a>>,
         range: Range,
     },
     FuncCall {
@@ -60,6 +82,9 @@ impl<'a> AstNode<'a> {
             | AstNode::ExprStmt { range, .. }
             | AstNode::Block { range, .. }
             | AstNode::FuncDecl { range, .. }
+            | AstNode::Case { range, .. }
+            | AstNode::CaseBranch { range, .. }
+            | AstNode::CasePattern { range, .. }
             | AstNode::FuncCall { range, .. }
             | AstNode::Ident { range, .. }
             | AstNode::StrLit { range, .. }
@@ -477,6 +502,7 @@ impl Parser {
     fn parse_stmt(&mut self) -> PResult {
         any! {
             self: parse_func_decl, "function declaration"
+                | parse_case, "case"
                 | parse_expr_stmt, "expression"
         }
     }
@@ -545,6 +571,7 @@ impl Parser {
 
         let body = any! {
             self: parse_block, "block"
+                | parse_case, "case"
                 | parse_expr, "expression"
         };
         let body = self.cut(body)?;
@@ -559,6 +586,148 @@ impl Parser {
         })
     }
 
+    fn parse_case(&mut self) -> PResult {
+        let case = token!("\"case\""; self: Token::Keyword { name: Keyword::Case, .. })?;
+
+        let expr = cut!(self: parse_expr)?;
+
+        let of = token!("\"of\""; self: Token::Keyword { name: Keyword::Of, .. });
+        self.cut(of)?;
+
+        cut!(self: parse_indent)?;
+
+        let cases = cut!(self: parse_case_cases)?;
+
+        cut!(self: parse_dedent)?;
+
+        let range = (case.span().range.0, cases.last().unwrap().range().1);
+
+        Ok(AstNode::Case {
+            expr: Box::new(expr),
+            cases,
+            range,
+        })
+    }
+
+    fn parse_case_cases(&mut self) -> Result<Vec<AstNode<'static>>, PError> {
+        let mut cases = Vec::new();
+
+        loop {
+            cases.push(cut!(self: parse_case_branch)?);
+
+            if peek!(0, self: Token::Dedent { .. }).is_some() {
+                break;
+            }
+
+            if opt!(self: Token::Newline { .. }).is_none() {
+                return Err(PError::SyntaxError {
+                    expected: &["\"newline\"", "\"dedent\""],
+                });
+            }
+        }
+
+        if cases.is_empty() {
+            return Err(PError::ParseError);
+        }
+
+        Ok(cases)
+    }
+
+    fn parse_case_branch(&mut self) -> PResult {
+        let pattern = cut!(self: parse_case_pattern)?;
+
+        let arrow = token!("\"=>\""; self: Token::MatchArrow { .. });
+        self.cut(arrow)?;
+
+        let body = cut!(self: parse_case_body)?;
+
+        let range = (pattern.range().0, body.range().1);
+
+        Ok(AstNode::CaseBranch {
+            pattern: Box::new(pattern),
+            body: Box::new(body),
+            range,
+        })
+    }
+
+    fn parse_case_pattern(&mut self) -> PResult {
+        if opt!(self: Token::Identifier { name: "_", .. }).is_some() {
+            let range = self.lexer.peek().span().range;
+
+            return Ok(AstNode::CasePattern {
+                kind: CasePatternKind::Empty,
+                expr: Box::new(AstNode::Ident { name: "_", range }),
+                range,
+            });
+        }
+
+        let first = cut!(self: parse_case_pattern_expr)?;
+
+        if opt!(self: Token::Symbol { value: '|', .. }).is_some() {
+            let rest = cut!(self: parse_case_pattern_or)?;
+
+            let range = (first.range().0, rest.last().unwrap().range().1);
+
+            let mut items = Vec::new();
+            items.push(first);
+            items.append(&mut rest.clone());
+
+            Ok(AstNode::CasePattern {
+                kind: CasePatternKind::Or,
+                expr: Box::new(AstNode::List { items, range }),
+                range,
+            })
+        } else {
+            let range = first.range();
+
+            Ok(AstNode::CasePattern {
+                kind: CasePatternKind::Expr,
+                expr: Box::new(first),
+                range,
+            })
+        }
+    }
+
+    fn parse_case_body(&mut self) -> PResult {
+        any! {
+            self: parse_block, "block"
+                | parse_func_call, "function call"
+                | parse_expr, "expression"
+        }
+    }
+
+    fn parse_case_pattern_expr(&mut self) -> PResult {
+        any! {
+            self: parse_identifier, "identifier"
+                | parse_string, "string"
+                | parse_number, "number"
+        }
+    }
+
+    fn parse_case_pattern_or(&mut self) -> Result<Vec<AstNode<'static>>, PError> {
+        let mut items = Vec::new();
+
+        loop {
+            let item = any! {
+                self: parse_identifier, "identifier"
+                    | parse_string, "string"
+                    | parse_number, "number"
+            };
+
+            items.push(self.cut(item)?);
+
+            if opt!(self: Token::Symbol { value: '|', .. }).is_none() {
+                break;
+            }
+        }
+
+        if items.is_empty() {
+            return Err(PError::ParseError);
+        }
+
+        Ok(items)
+    }
+
     fn parse_expr(&mut self) -> PResult {
         any! {
             self: parse_identifier, "identifier"
@@ -568,55 +737,6 @@ impl Parser {
                 | parse_record, "record"
                 | parse_par_expr, "expression"
         }
-    }
-
-    fn parse_par_expr(&mut self) -> PResult {
-        let start = token!("\"(\""; self: Token::Symbol { value: '(', .. })?;
-
-        self.ignore_nl_and_ws()?;
-
-        let expr = any! {
-            self: parse_func_call, "function call"
-                | parse_expr, "expression"
-        };
-        let expr = self.cut(expr)?;
-
-        self.ignore_nl_and_ws()?;
-
-        let end = token!("\")\""; self: Token::Symbol { value: ')', .. })?;
-
-        let expr = match expr {
-            AstNode::FuncCall { callee, arg, .. } => AstNode::FuncCall {
-                callee,
-                arg,
-                range: (start.span().range.0, end.span().range.1),
-            },
-            AstNode::Ident { name, .. } => AstNode::Ident {
-                name,
-                range: (start.span().range.0, end.span().range.1),
-            },
-            AstNode::StrLit { value, .. } => AstNode::StrLit {
-                value,
-                format: false,
-                range: (start.span().range.0, end.span().range.1),
-            },
-            AstNode::NumLit { value, .. } => AstNode::NumLit {
-                value,
-                range: (start.span().range.0, end.span().range.1),
-            },
-            AstNode::List { items, .. } => AstNode::List {
-                items,
-                range: (start.span().range.0, end.span().range.1),
-            },
-            AstNode::Record { keys, values, .. } => AstNode::Record {
-                keys,
-                values,
-                range: (start.span().range.0, end.span().range.1),
-            },
-            _ => expr,
-        };
-
-        Ok(expr)
     }
 
     fn parse_func_call(&mut self) -> PResult {
@@ -827,5 +947,56 @@ impl Parser {
         self.ignore_nl_and_ws()?;
 
         Ok(())
+    }
+
+    fn parse_par_expr(&mut self) -> PResult {
+        let start = token!("\"(\""; self: Token::Symbol { value: '(', .. })?;
+
+        self.ignore_nl_and_ws()?;
+
+        let expr = any! {
+            self: parse_func_call, "function call"
+                | parse_expr, "expression"
+        };
+        let expr = self.cut(expr)?;
+
+        self.ignore_nl_and_ws()?;
+
+        let end = token!("\")\""; self: Token::Symbol { value: ')', .. })?;
+
+        let expr = match expr {
+            // TODO: Add `FuncDecl` for anonymous functions
+            // TODO: Add `Case`
+            AstNode::FuncCall { callee, arg, .. } => AstNode::FuncCall {
+                callee,
+                arg,
+                range: (start.span().range.0, end.span().range.1),
+            },
+            AstNode::Ident { name, .. } => AstNode::Ident {
+                name,
+                range: (start.span().range.0, end.span().range.1),
+            },
+            AstNode::StrLit { value, format, .. } => AstNode::StrLit {
+                value,
+                format,
+                range: (start.span().range.0, end.span().range.1),
+            },
+            AstNode::NumLit { value, .. } => AstNode::NumLit {
+                value,
+                range: (start.span().range.0, end.span().range.1),
+            },
+            AstNode::List { items, .. } => AstNode::List {
+                items,
+                range: (start.span().range.0, end.span().range.1),
+            },
+            AstNode::Record { keys, values, .. } => AstNode::Record {
+                keys,
+                values,
+                range: (start.span().range.0, end.span().range.1),
+            },
+            _ => expr,
+        };
+
+        Ok(expr)
     }
 }

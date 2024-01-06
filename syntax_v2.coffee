@@ -10,7 +10,7 @@ get_color fruit ->
     "apples"            => "red"
     "bananas" | "limes" => "yellow"
     "oranges"           => "orange"
-    _                   => gen %% { ctx = ["give me the fruit color"], temp = 0.3 }
+    _                   => gen %% { "ctx" = ["give me the fruit color"], "temp" = 0.3 }
 
   $"{fruit} are {color fruit}"
 

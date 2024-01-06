@@ -49,7 +49,7 @@ pub enum Token {
         span: Span,
     },
     Symbol {
-        // ',' | '.' | '=' | '$' | ':' | '\' | '(' | ')' | '[' | ']' | '{' | '}'
+        // ',' | '.' | '=' | '$' | ':' | '\' | '|' | '(' | ')' | '[' | ']' | '{' | '}'
         value: char,
         span: Span,
     },
@@ -70,6 +70,7 @@ pub enum Token {
         // =>
         span: Span,
     },
+    // Context (%%) is treated as an identifier
     Newline {
         span: Span,
     },
@@ -572,7 +573,7 @@ impl Lexer {
                     }
                 }
                 // Symbol
-                ',' | ':' | '$' | '\\' | '(' | ')' | '[' | ']' | '{' | '}' => {
+                ',' | ':' | '$' | '\\' | '|' | '(' | ')' | '[' | ']' | '{' | '}' => {
                     tokens.push(Token::Symbol {
                         value: *self.scanner.next().unwrap(),
                         span: Span {
@@ -636,6 +637,27 @@ impl Lexer {
 
                     if self.scanner.try_consume('|') {
                         tokens.push(Token::ApplicationArrow {
+                            span: Span {
+                                line,
+                                column,
+                                range: (span_start, self.scanner.cursor()),
+                            },
+                        });
+                    } else {
+                        return Err(LexError::UnexpectedChar(
+                            *self.scanner.peek().unwrap(),
+                            self.scanner.column(),
+                            self.scanner.line(),
+                        ));
+                    }
+                }
+                // Context
+                '%' => {
+                    self.scanner.next();
+
+                    if self.scanner.try_consume('%') {
+                        tokens.push(Token::Identifier {
+                            name: "%%",
                             span: Span {
                                 line,
                                 column,
