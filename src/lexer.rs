@@ -329,9 +329,65 @@ impl Lexer {
                 // String
                 '"' => {
                     let mut string = String::new();
-                    let is_multiline = self.scanner.try_consume_sequence("\"\"\"\n");
 
-                    if is_multiline {
+                    self.scanner.next();
+
+                    while let Some(chr) = self.scanner.peek() {
+                        match chr {
+                            '\\' => {
+                                self.scanner.next();
+
+                                if let Some(chr) = self.scanner.peek() {
+                                    match chr {
+                                        '\\' | '"' => string.push(*chr),
+                                        'n' => string.push('\n'),
+                                        't' => string.push('\t'),
+                                        _ => {
+                                            return Err(LexError::UnexpectedChar(
+                                                *chr,
+                                                self.scanner.column(),
+                                                self.scanner.line(),
+                                            ))
+                                        }
+                                    }
+
+                                    self.scanner.next();
+                                } else {
+                                    return Err(LexError::UnexpectedEOF(
+                                        self.scanner.column(),
+                                        self.scanner.line(),
+                                    ));
+                                }
+                            }
+                            '"' => {
+                                self.scanner.next();
+                                break;
+                            }
+                            _ => {
+                                string.push(*chr);
+                                self.scanner.next();
+                            }
+                        }
+                    }
+
+                    let span = Span {
+                        line,
+                        column,
+                        range: (span_start, self.scanner.cursor()),
+                    };
+
+                    tokens.push(Token::String {
+                        value: Box::leak(string.into_boxed_str()),
+                        span,
+                    });
+                }
+                // Multiline String
+                '@' => {
+                    self.scanner.next();
+
+                    if self.scanner.try_consume_sequence("\"\n") {
+                        let mut string = String::new();
+
                         let last_indent = *indent_stack.last().unwrap_or(&0);
                         let mut discarded_indent = 0;
 
@@ -371,7 +427,7 @@ impl Lexer {
                                     }
                                 }
 
-                                if self.scanner.try_consume_sequence("\"\"\"") {
+                                if self.scanner.try_consume_sequence("\"@") {
                                     if tab_size > 0 {
                                         if spaces != last_indent {
                                             return Err(LexError::UnexpectedIndent(
@@ -387,7 +443,7 @@ impl Lexer {
                                     string.push('\n');
                                 }
                             } else {
-                                if self.scanner.try_consume_sequence("\"\"\"") {
+                                if self.scanner.try_consume_sequence("\"@") {
                                     return Err(LexError::UnexpectedChar(
                                         '"',
                                         self.scanner.column(),
@@ -398,58 +454,24 @@ impl Lexer {
                                 string.push(*self.scanner.next().unwrap());
                             }
                         }
+
+                        let span = Span {
+                            line,
+                            column,
+                            range: (span_start, self.scanner.cursor()),
+                        };
+
+                        tokens.push(Token::String {
+                            value: Box::leak(string.into_boxed_str()),
+                            span,
+                        });
                     } else {
-                        self.scanner.next();
-
-                        while let Some(chr) = self.scanner.peek() {
-                            match chr {
-                                '\\' => {
-                                    self.scanner.next();
-
-                                    if let Some(chr) = self.scanner.peek() {
-                                        match chr {
-                                            '\\' | '"' => string.push(*chr),
-                                            'n' => string.push('\n'),
-                                            't' => string.push('\t'),
-                                            _ => {
-                                                return Err(LexError::UnexpectedChar(
-                                                    *chr,
-                                                    self.scanner.column(),
-                                                    self.scanner.line(),
-                                                ))
-                                            }
-                                        }
-
-                                        self.scanner.next();
-                                    } else {
-                                        return Err(LexError::UnexpectedEOF(
-                                            self.scanner.column(),
-                                            self.scanner.line(),
-                                        ));
-                                    }
-                                }
-                                '"' => {
-                                    self.scanner.next();
-                                    break;
-                                }
-                                _ => {
-                                    string.push(*chr);
-                                    self.scanner.next();
-                                }
-                            }
-                        }
+                        return Err(LexError::UnexpectedChar(
+                            *self.scanner.peek().unwrap(),
+                            self.scanner.column(),
+                            self.scanner.line(),
+                        ));
                     }
-
-                    let span = Span {
-                        line,
-                        column,
-                        range: (span_start, self.scanner.cursor()),
-                    };
-
-                    tokens.push(Token::String {
-                        value: Box::leak(string.into_boxed_str()),
-                        span,
-                    });
                 }
                 // Regex
                 '/' => {

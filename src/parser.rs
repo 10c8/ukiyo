@@ -14,6 +14,10 @@ pub enum AstNode<'a> {
         expr: Box<AstNode<'a>>,
         range: Range,
     },
+    Block {
+        body: Vec<AstNode<'a>>,
+        range: Range,
+    },
     FuncDecl {
         id: Option<Box<AstNode<'a>>>,
         params: Vec<AstNode<'a>>,
@@ -54,6 +58,7 @@ impl<'a> AstNode<'a> {
         match self {
             AstNode::Prog { range, .. }
             | AstNode::ExprStmt { range, .. }
+            | AstNode::Block { range, .. }
             | AstNode::FuncDecl { range, .. }
             | AstNode::FuncCall { range, .. }
             | AstNode::Ident { range, .. }
@@ -71,6 +76,8 @@ type PResult = Result<AstNode<'static>, PError>;
 pub enum PError {
     ParseError,
     SyntaxError { expected: &'static [&'static str] },
+    InvalidIndent(usize),
+    InvalidDedent(usize),
 
     Cut(Box<PError>, Token),
 }
@@ -285,6 +292,8 @@ macro_rules! map {
 pub struct Parser {
     lexer: Lexer,
     cut_error: Option<PError>,
+    indent_stack: Vec<usize>,
+    indent_size: usize,
 }
 
 impl Parser {
@@ -292,6 +301,8 @@ impl Parser {
         Parser {
             lexer,
             cut_error: None,
+            indent_stack: Vec::new(),
+            indent_size: 0,
         }
     }
 
@@ -338,10 +349,32 @@ impl Parser {
                 write!(&mut msg, "Syntax Error @ {}:{}\n", line, column)?;
                 self.display_error_line(&mut msg, line, column, start, end);
 
-                write!(&mut msg, "Expected one of:")?;
+                write!(&mut msg, "Unexpected {}. Expected one of:", tok)?;
                 for e in expected {
                     write!(&mut msg, "\n - {}", e)?;
                 }
+            }
+            PError::InvalidIndent(size) => {
+                write!(&mut msg, "Indentation Error @ {}:{}\n", line, column)?;
+                self.display_error_line(&mut msg, line, column, start, end);
+
+                write!(
+                    &mut msg,
+                    "Expected indent of size {}, found {}.",
+                    self.indent_stack.last().unwrap_or(&0) + self.indent_size,
+                    size
+                )?;
+            }
+            PError::InvalidDedent(size) => {
+                write!(&mut msg, "Indentation Error @ {}:{}\n", line, column)?;
+                self.display_error_line(&mut msg, line, column, start, end);
+
+                write!(
+                    &mut msg,
+                    "Expected indent of size {}, found {}.",
+                    self.indent_stack.last().unwrap_or(&0),
+                    size
+                )?;
             }
             _ => unreachable!("unrecoverable error"),
         }
@@ -384,14 +417,49 @@ impl Parser {
         Ok(())
     }
 
-    // fn ignore_ws(&mut self) -> Result<(), PError> {
-    //     many!(0.., self: Token::Indent { .. } | Token::Dedent { .. })?;
-    //     Ok(())
-    // }
-
     fn ignore_nl_and_ws(&mut self) -> Result<(), PError> {
         many!(0.., self: Token::Newline { .. } | Token::Indent { .. } | Token::Dedent { .. })?;
         Ok(())
+    }
+
+    fn parse_indent(&mut self) -> Result<(), PError> {
+        let last_indent = self.indent_stack.last().unwrap_or(&0);
+
+        let indent = token!("indent"; self: Token::Indent { .. })?;
+        if let Token::Indent { size, .. } = indent {
+            if self.indent_size == 0 {
+                self.indent_size = size;
+            }
+
+            if size == *last_indent + self.indent_size {
+                self.indent_stack.push(size);
+                Ok(())
+            } else {
+                self.cut(Err(PError::InvalidIndent(size)))
+            }
+        } else {
+            Err(PError::SyntaxError {
+                expected: &["indent"],
+            })
+        }
+    }
+
+    fn parse_dedent(&mut self) -> Result<(), PError> {
+        let last_indent = self.indent_stack.last().unwrap_or(&0);
+
+        let dedent = token!("dedent"; self: Token::Dedent { .. })?;
+        if let Token::Dedent { size, .. } = dedent {
+            if size == *last_indent {
+                self.indent_stack.pop();
+                Ok(())
+            } else {
+                self.cut(Err(PError::InvalidDedent(size)))
+            }
+        } else {
+            Err(PError::SyntaxError {
+                expected: &["dedent"],
+            })
+        }
     }
 
     fn parse_program(&mut self) -> PResult {
@@ -424,6 +492,82 @@ impl Parser {
             expr: Box::new(expr),
             range,
         })
+    }
+
+    fn parse_block(&mut self) -> PResult {
+        self.parse_indent()?;
+
+        let mut body = Vec::new();
+
+        loop {
+            body.push(cut!(self: parse_stmt)?);
+
+            self.ignore_nl()?;
+
+            if peek!(0, self: Token::Dedent { .. }).is_some() {
+                break;
+            }
+        }
+
+        cut!(self: parse_dedent)?;
+
+        if body.is_empty() {
+            return Err(PError::ParseError);
+        }
+
+        let range = (
+            body.first().map(|stmt| stmt.range().0).unwrap_or(0),
+            body.last().map(|stmt| stmt.range().1).unwrap_or(0),
+        );
+
+        Ok(AstNode::Block { body, range })
+    }
+
+    fn parse_func_decl(&mut self) -> PResult {
+        let anon_marker = opt!(self: Token::Symbol { value: '\\', .. });
+
+        let range_start;
+        let id = match anon_marker {
+            Some(Token::Symbol { span, .. }) => {
+                range_start = span.range.0;
+                None
+            }
+            None => {
+                range_start = self.lexer.peek().span().range.0;
+                Some(Box::new(self.parse_identifier()?))
+            }
+            _ => unreachable!(),
+        };
+
+        let params = many!(0.., self: parse_identifier)?;
+
+        map!(self: Token::AssignmentArrow { .. }, "->" => { })?;
+
+        let body = any! {
+            self: parse_block, "block"
+                | parse_expr, "expression"
+        };
+        let body = self.cut(body)?;
+
+        let range = (range_start, body.range().1);
+
+        Ok(AstNode::FuncDecl {
+            id,
+            params,
+            body: Box::new(body),
+            range,
+        })
+    }
+
+    fn parse_expr(&mut self) -> PResult {
+        any! {
+            self: parse_identifier, "identifier"
+                | parse_string, "string"
+                | parse_number, "number"
+                | parse_list, "list"
+                | parse_record, "record"
+                | parse_par_expr, "expression"
+        }
     }
 
     fn parse_par_expr(&mut self) -> PResult {
@@ -473,49 +617,6 @@ impl Parser {
         };
 
         Ok(expr)
-    }
-
-    fn parse_func_decl(&mut self) -> PResult {
-        let anon_marker = opt!(self: Token::Symbol { value: '\\', .. });
-
-        let range_start;
-        let id = match anon_marker {
-            Some(Token::Symbol { span, .. }) => {
-                range_start = span.range.0;
-                None
-            }
-            None => {
-                range_start = self.lexer.peek().span().range.0;
-                Some(Box::new(self.parse_identifier()?))
-            }
-            _ => unreachable!(),
-        };
-
-        let params = many!(0.., self: parse_identifier)?;
-
-        map!(self: Token::AssignmentArrow { .. }, "->" => { })?;
-
-        let body = cut!(self: parse_expr)?;
-
-        let range = (range_start, body.range().1);
-
-        Ok(AstNode::FuncDecl {
-            id,
-            params,
-            body: Box::new(body),
-            range,
-        })
-    }
-
-    fn parse_expr(&mut self) -> PResult {
-        any! {
-            self: parse_identifier, "identifier"
-                | parse_string, "string"
-                | parse_number, "number"
-                | parse_list, "list"
-                | parse_record, "record"
-                | parse_par_expr, "expression"
-        }
     }
 
     fn parse_func_call(&mut self) -> PResult {

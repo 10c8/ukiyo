@@ -30,7 +30,7 @@ fruit_flavors ->
     1 => head ff
     _ => $"{init ff <| join ", "} and {tail ff}"
 
-$#"
+$@"
 Fruits have many colors: {fruit_colors}.
 Oh, and by the way, they can also display many flavors, such as {fruit_flavors}.
-"#
+"@

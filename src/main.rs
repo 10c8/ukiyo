@@ -4,11 +4,13 @@ mod scanner;
 
 fn main() {
     let example = r#"
-flavors -> {
-    "fruit"     = ["sweet", "sour", "bitter"],
-    "vegetable" = ["bitter", "salty", "umami"],
-    "meat"      = ["salty", "umami", "sweet"],
-}
+main ->
+    fruits -> ["apples", "bananas", "oranges", "limes"]
+    flavors -> {
+        "fruit"     = ["sweet", "sour", "bitter"],
+        "vegetable" = ["bitter", "salty", "umami"],
+        "meat"      = ["salty", "umami", "sweet"],
+    }
 "#;
 
     let mut lexer = lexer::Lexer::new(example);
