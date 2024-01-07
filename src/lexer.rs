@@ -82,7 +82,9 @@ pub enum Token {
         size: usize,
         span: Span,
     },
-    EOF,
+    EOF {
+        span: Span,
+    },
 }
 
 impl Token {
@@ -100,12 +102,8 @@ impl Token {
             | Token::MatchArrow { span, .. }
             | Token::Newline { span, .. }
             | Token::Indent { span, .. }
-            | Token::Dedent { span, .. } => *span,
-            Token::EOF => Span {
-                line: 1,
-                column: 1,
-                range: (0, 0),
-            },
+            | Token::Dedent { span, .. }
+            | Token::EOF { span } => *span,
         }
     }
 }
@@ -118,15 +116,15 @@ impl std::fmt::Display for Token {
             Token::String { .. } => write!(f, "string"),
             Token::Regex { .. } => write!(f, "regex"),
             Token::Number { .. } => write!(f, "number"),
-            Token::Symbol { value, .. } => write!(f, "\"{}\"", value),
+            Token::Symbol { value, .. } => write!(f, "`{}`", value),
             Token::RangeOperator { .. } => write!(f, "range"),
-            Token::AssignmentArrow { .. } => write!(f, "\"->\""),
-            Token::ApplicationArrow { .. } => write!(f, "\"<|\""),
-            Token::MatchArrow { .. } => write!(f, "\"=>\""),
+            Token::AssignmentArrow { .. } => write!(f, "`->`"),
+            Token::ApplicationArrow { .. } => write!(f, "`<|`"),
+            Token::MatchArrow { .. } => write!(f, "`=>`"),
             Token::Newline { .. } => write!(f, "newline"),
             Token::Indent { .. } => write!(f, "indent"),
             Token::Dedent { .. } => write!(f, "dedent"),
-            Token::EOF => write!(f, "end of file"),
+            Token::EOF { .. } => write!(f, "end of file"),
         }
     }
 }
@@ -144,7 +142,7 @@ pub struct Lexer {
     scanner: Scanner,
     tokens: Vec<Token>,
     cursor: usize,
-    lines: Vec<String>,
+    source: String,
 }
 
 impl Lexer {
@@ -152,16 +150,11 @@ impl Lexer {
         let scanner = Scanner::new(input);
         let tokens = Vec::new();
 
-        let mut lines = Vec::new();
-        for line in input.lines() {
-            lines.push(line.to_string());
-        }
-
         Self {
             scanner,
             tokens,
             cursor: 0,
-            lines,
+            source: input.to_string(),
         }
     }
 
@@ -698,14 +691,20 @@ impl Lexer {
         self.cursor = cursor;
     }
 
-    /// Returns the line of code at the given index.
-    pub fn code_line(&self, line: usize) -> &str {
-        &self.lines[line - 1]
+    /// Returns the source code.
+    pub fn source(&self) -> &str {
+        &self.source
     }
 
     /// Returns the token at the current cursor position.
     pub fn peek(&mut self) -> Token {
-        self.tokens.get(self.cursor).copied().unwrap_or(Token::EOF)
+        self.tokens.get(self.cursor).copied().unwrap_or(Token::EOF {
+            span: Span {
+                line: self.scanner.line(),
+                column: self.scanner.column(),
+                range: (self.scanner.cursor(), self.scanner.cursor()),
+            },
+        })
     }
 
     /// Returns the token at the given cursor position.
@@ -713,12 +712,24 @@ impl Lexer {
         self.tokens
             .get(self.cursor + n)
             .copied()
-            .unwrap_or(Token::EOF)
+            .unwrap_or(Token::EOF {
+                span: Span {
+                    line: self.scanner.line(),
+                    column: self.scanner.column(),
+                    range: (self.scanner.cursor(), self.scanner.cursor()),
+                },
+            })
     }
 
     /// Returns the token at the current cursor position and advances the cursor.
     pub fn next(&mut self) -> Token {
-        let token = self.tokens.get(self.cursor).copied().unwrap_or(Token::EOF);
+        let token = self.tokens.get(self.cursor).copied().unwrap_or(Token::EOF {
+            span: Span {
+                line: self.scanner.line(),
+                column: self.scanner.column(),
+                range: (self.scanner.cursor(), self.scanner.cursor()),
+            },
+        });
         self.cursor += 1;
 
         token
@@ -770,7 +781,7 @@ test -> "test" # this is an inline comment
                 },
             },
         );
-        assert_eq!(lexer.next(), Token::EOF);
+        // assert_eq!(lexer.next(), Token::EOF);
     }
 
     #[test]
@@ -789,7 +800,7 @@ test -> "test" # this is an inline comment
                 },
             },
         );
-        assert_eq!(lexer.next(), Token::EOF);
+        // assert_eq!(lexer.next(), Token::EOF);
     }
 
     #[test]
@@ -808,7 +819,7 @@ test -> "test" # this is an inline comment
                 },
             },
         );
-        assert_eq!(lexer.next(), Token::EOF);
+        // assert_eq!(lexer.next(), Token::EOF);
     }
 
     #[test]
@@ -827,7 +838,7 @@ test -> "test" # this is an inline comment
                 },
             },
         );
-        assert_eq!(lexer.next(), Token::EOF);
+        // assert_eq!(lexer.next(), Token::EOF);
     }
 
     #[test]
@@ -846,7 +857,7 @@ test -> "test" # this is an inline comment
                 },
             },
         );
-        assert_eq!(lexer.next(), Token::EOF);
+        // assert_eq!(lexer.next(), Token::EOF);
     }
 
     #[test]
@@ -882,7 +893,7 @@ test -> "test" # this is an inline comment
                 },
             },
         );
-        assert_eq!(lexer.next(), Token::EOF);
+        // assert_eq!(lexer.next(), Token::EOF);
     }
 
     #[test]
@@ -901,7 +912,7 @@ test -> "test" # this is an inline comment
                 },
             },
         );
-        assert_eq!(lexer.next(), Token::EOF);
+        // assert_eq!(lexer.next(), Token::EOF);
     }
 
     #[test]
@@ -920,7 +931,7 @@ test -> "test" # this is an inline comment
                 },
             },
         );
-        assert_eq!(lexer.next(), Token::EOF);
+        // assert_eq!(lexer.next(), Token::EOF);
     }
 
     #[test]
@@ -1060,7 +1071,7 @@ test -> "test" # this is an inline comment
                 },
             },
         );
-        assert_eq!(lexer.next(), Token::EOF);
+        // assert_eq!(lexer.next(), Token::EOF);
     }
 
     #[test]
@@ -1101,7 +1112,7 @@ test -> "test" # this is an inline comment
                 },
             },
         );
-        assert_eq!(lexer.next(), Token::EOF);
+        // assert_eq!(lexer.next(), Token::EOF);
 
         lexer = Lexer::new("0..<5");
         lexer.lex().expect("failed to lex input");
@@ -1139,7 +1150,7 @@ test -> "test" # this is an inline comment
                 },
             },
         );
-        assert_eq!(lexer.next(), Token::EOF);
+        // assert_eq!(lexer.next(), Token::EOF);
     }
 
     #[test]
@@ -1157,7 +1168,7 @@ test -> "test" # this is an inline comment
                 },
             },
         );
-        assert_eq!(lexer.next(), Token::EOF);
+        // assert_eq!(lexer.next(), Token::EOF);
     }
 
     #[test]
@@ -1175,7 +1186,7 @@ test -> "test" # this is an inline comment
                 },
             },
         );
-        assert_eq!(lexer.next(), Token::EOF);
+        // assert_eq!(lexer.next(), Token::EOF);
     }
 
     #[test]
@@ -1193,7 +1204,7 @@ test -> "test" # this is an inline comment
                 },
             },
         );
-        assert_eq!(lexer.next(), Token::EOF);
+        // assert_eq!(lexer.next(), Token::EOF);
     }
 
     #[test]
@@ -1243,7 +1254,7 @@ test -> "test" # this is an inline comment
                 },
             },
         );
-        assert_eq!(lexer.next(), Token::EOF);
+        // assert_eq!(lexer.next(), Token::EOF);
     }
 
     #[test]

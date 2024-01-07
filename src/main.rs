@@ -6,7 +6,7 @@ fn main() {
     let example = r#"
 fruits -> ["apples", "bananas", "oranges", "limes"]
 flavors -> {
-    "fruit"     = ["sweet", "sour", "bitter"],
+    "fruit"     = [of, "sweet", "sour", "bitter"],
     "vegetable" = ["bitter", "salty", "umami"],
     "meat"      = ["salty", "umami", "sweet"],
 }
@@ -34,12 +34,12 @@ get_color fruit ->
         //     let token = lexer_copy.next();
         //     print!("{:#?}\n", token);
 
-        //     if token == lexer::Token::EOF {
+        //     if let lexer::Token::EOF { .. } = token {
         //         break;
         //     }
         // }
 
-        println!("\n{}", parser.display_error(err).unwrap());
+        parser.display_error(err);
         return;
     }
 
