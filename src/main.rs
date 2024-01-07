@@ -1,28 +1,58 @@
+use codespan_reporting::{
+    files::SimpleFiles,
+    term::{
+        self,
+        termcolor::{ColorChoice, StandardStream},
+    },
+};
+
 mod lexer;
 mod parser;
 mod scanner;
+
+use crate::lexer::ToDiagnostic;
 
 fn main() {
     let example = r#"
 fruits -> ["apples", "bananas", "oranges", "limes"]
 flavors -> {
-    "fruit"     = [of, "sweet", "sour", "bitter"],
-    "vegetable" = ["bitter", "salty", "umami"],
-    "meat"      = ["salty", "umami", "sweet"],
+  "fruit"     = ["sweet", "sour", "bitter"],
+  "vegetable" = ["bitter", "salty", "umami"],
+  "meat"      = ["salty", "umami", "sweet"],
 }
 
 get_color fruit ->
-    color -> case fruit of
-        "apples"            => "red"
-        "bananas" | "limes" => "yellow"
-        "oranges"           => "orange"
-        _                   => gen %% { "ctx" = ["give me the fruit color"], "temp" = 0.3 }
+  color -> case fruit of
+    "apples"            => "red"
+    "bananas" | "limes" => "yellow"
+    "oranges"           => "orange"
+    _                   => gen %% { "ctx" = ["give me the fruit color"], "temp" = 0.3 }
 
-    $"{fruit} are {color}"
+  $"{fruit} are {color}"
+
+fruit_colors ->
+  case (len fruits) of
+    1 => get_color (head fruits)
+    _ =>
+      start -> join ((init fruits) |f| get_color f) ", "
+      end   -> get_color (last fruits)
+
+      $"{start} and {end}"
 "#;
 
+    let mut files = SimpleFiles::new();
+    files.add("src", example);
+
+    let writer = StandardStream::stderr(ColorChoice::Auto);
+    let config = term::Config::default();
+
     let mut lexer = lexer::Lexer::new(example);
-    lexer.lex().expect("failed to lex input");
+    let lex_result = lexer.lex();
+    if let Err(err) = lex_result {
+        let diagnostic = err.to_diagnostic(&files);
+        term::emit(&mut writer.lock(), &config, &files, &diagnostic).unwrap();
+        return;
+    }
 
     // let mut lexer_copy = lexer.clone();
 
