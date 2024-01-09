@@ -32,6 +32,7 @@ pub enum AstNode<'a> {
     },
     FuncDecl {
         id: Option<Box<AstNode<'a>>>,
+        is_const: bool,
         params: Vec<AstNode<'a>>,
         body: Box<AstNode<'a>>,
         range: Range,
@@ -89,6 +90,12 @@ pub enum AstNode<'a> {
         values: Vec<AstNode<'a>>,
         range: Range,
     },
+    Range {
+        mode: RangeMode,
+        start: Box<AstNode<'a>>,
+        end: Box<AstNode<'a>>,
+        range: Range,
+    },
 }
 
 impl<'a> AstNode<'a> {
@@ -108,7 +115,8 @@ impl<'a> AstNode<'a> {
             | AstNode::StrLit { range, .. }
             | AstNode::NumLit { range, .. }
             | AstNode::List { range, .. }
-            | AstNode::Record { range, .. } => *range,
+            | AstNode::Record { range, .. }
+            | AstNode::Range { range, .. } => *range,
         }
     }
 }
@@ -119,6 +127,7 @@ type PResult = Result<AstNode<'static>, ParseError>;
 pub enum ParseError {
     Fail,
     Unexpected { expected: &'static [&'static str] },
+    Forbidden(&'static str),
     InvalidIndent(usize),
     InvalidDedent(usize),
 
@@ -158,10 +167,10 @@ macro_rules! cut {
 
 /// Matches the next token against a pattern. On success, returns `Token`.
 macro_rules! token {
-    ($name:literal; $self:ident: $token:pat) => {
+    ($first_exp:literal $(, $rest_exp:literal)*; $self:ident: $token:pat) => {
         match $self.lexer.peek() {
             $token => Ok($self.lexer.next()),
-            _ => Err(ParseError::Unexpected { expected: &[$name] }),
+            _ => Err(ParseError::Unexpected { expected: &[$first_exp $(, $rest_exp)*] }),
         }
     };
 }
@@ -213,7 +222,7 @@ macro_rules! peek {
 
 /// Tries a list of parsers and stops on the first success.
 macro_rules! any {
-    ($self:ident: $first:ident, $first_exp:literal $(| $rest:ident, $rest_exp:literal )*) => {{
+    ($self:ident: $first:ident, $first_exp:literal $(| $rest:ident, $rest_exp:literal)*) => {{
         if let Ok(success) = parse_cut!($self: $first) {
             Ok(success)
         } $(else if let Ok(success) = parse_cut!($self: $rest) {
@@ -442,6 +451,10 @@ impl Parser {
                     .with_labels(vec![Label::primary(src_id, span.range.0..span.range.1)])
                     .with_notes(vec![expected])
             }
+            ParseError::Forbidden(reason) => Diagnostic::error()
+                .with_code("parse")
+                .with_message(reason)
+                .with_labels(vec![Label::primary(src_id, span.range.0..span.range.1)]),
             ParseError::InvalidIndent(size) => Diagnostic::error()
                 .with_code("parse")
                 .with_message("Wrong indentation.")
@@ -603,7 +616,28 @@ impl Parser {
     }
 
     fn parse_func_decl(&mut self) -> PResult {
+        let const_marker = opt!(self: Token::Keyword { name: Keyword::Const, .. });
+
         let anon_marker = opt!(self: Token::Symbol { value: '\\', .. });
+
+        if const_marker.is_some() && anon_marker.is_some() {
+            let org_span = const_marker.unwrap().span();
+            let culprit = Token::Keyword {
+                name: Keyword::Const,
+                span: Span {
+                    line: org_span.line,
+                    column: org_span.column,
+                    range: (org_span.range.0, anon_marker.unwrap().span().range.1),
+                },
+            };
+
+            return Err(ParseError::Cut(
+                Box::new(ParseError::Forbidden(
+                    "An anonymous function cannot be constant.",
+                )),
+                culprit,
+            ));
+        }
 
         let range_start;
         let id = match anon_marker {
@@ -613,7 +647,7 @@ impl Parser {
             }
             None => {
                 range_start = self.lexer.peek().span().range.0;
-                Some(Box::new(self.parse_identifier()?))
+                Some(self.parse_identifier()?)
             }
             _ => unreachable!(),
         };
@@ -627,6 +661,7 @@ impl Parser {
                 | parse_case, "case statement"
                 | parse_func_decl, "function declaration"
                 | parse_iteration_op, "iteration operation"
+                | parse_func_call, "function call"
                 | parse_expr, "expression"
         };
         let body = self.cut(body)?;
@@ -635,7 +670,8 @@ impl Parser {
 
         let result = match id {
             Some(id) => AstNode::FuncDecl {
-                id: Some(id),
+                id: Some(Box::new(id)),
+                is_const: const_marker.is_some(),
                 params,
                 body: Box::new(body),
                 range,
@@ -798,7 +834,8 @@ impl Parser {
 
     fn parse_expr(&mut self) -> PResult {
         any! {
-            self: parse_identifier, "identifier"
+            self: parse_range, "range"
+                | parse_identifier, "identifier"
                 | parse_string, "string"
                 | parse_number, "number"
                 | parse_list, "list"
@@ -1044,6 +1081,36 @@ impl Parser {
         self.ignore_nl_and_ws()?;
 
         Ok(())
+    }
+
+    fn parse_range(&mut self) -> PResult {
+        let start = self.parse_range_part()?;
+
+        let op = token!("range operator"; self: Token::RangeOperator { .. })?;
+        let mode = match op {
+            Token::RangeOperator { mode, .. } => mode,
+            _ => unreachable!(),
+        };
+
+        let end = cut!(self: parse_range_part)?;
+
+        let range = (start.range().0, end.range().1);
+
+        Ok(AstNode::Range {
+            mode,
+            start: Box::new(start),
+            end: Box::new(end),
+            range,
+        })
+    }
+
+    fn parse_range_part(&mut self) -> PResult {
+        any! {
+            self: parse_identifier, "identifier"
+                | parse_string, "string"
+                | parse_number, "number"
+                | parse_par_expr, "expression"
+        }
     }
 
     fn parse_par_expr(&mut self) -> PResult {

@@ -24,7 +24,7 @@ gen_item ->
   }
   "@
 
-inventory -> join (repeat gen_item (rand 1 5)) ",\n"
+inventory -> join (1..=(rand 1 5) |_| gen_item) ",\n"
 
 @"
 {

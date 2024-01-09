@@ -12,14 +12,14 @@ get_color fruit ->
     "oranges"           => "orange"
     _                   => gen %% { "ctx" = ["give me the fruit color"], "temp" = 0.3 }
 
-  $"{fruit} are {color fruit}"
+  $"{fruit} are {color}"
 
 fruit_colors ->
   case len fruits of
-    1 => head fruits <| get_color
+    1 => get_color (head fruits)
     _ =>
-      start -> (init fruits |f| get_color f) <| join ", "
-      end   -> last fruits <| get_color
+      start -> join (init fruits |f| get_color f) ", "
+      end   -> get_color (last fruits)
 
       $"{start} and {end}"
 
@@ -28,7 +28,7 @@ fruit_flavors ->
 
   case len ff of
     1 => head ff
-    _ => $"{init ff <| join ", "} and {tail ff}"
+    _ => $"{join (init ff) ", "} and {tail ff}"
 
 $@"
 Fruits have many colors: {fruit_colors}.

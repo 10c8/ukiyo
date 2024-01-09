@@ -15,13 +15,14 @@ pub struct Span {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Keyword {
     Case,
+    Const,
     Do,
     Each,
     Of,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum RangeOperator {
+pub enum RangeMode {
     Inclusive,
     Exclusive,
 }
@@ -34,7 +35,7 @@ pub enum Token {
         span: Span,
     },
     Keyword {
-        // case | do | each | of
+        // case | const | do | each | of
         name: Keyword,
         span: Span,
     },
@@ -60,7 +61,7 @@ pub enum Token {
     },
     RangeOperator {
         // "..=" | "..<"
-        mode: RangeOperator,
+        mode: RangeMode,
         span: Span,
     },
     AssignmentArrow {
@@ -144,15 +145,11 @@ pub enum LexError {
 }
 
 pub trait ToDiagnostic {
-    type T;
-
-    fn to_diagnostic(&self, files: &SimpleFiles<&str, &str>) -> Diagnostic<Self::T>;
+    fn to_diagnostic(&self, files: &SimpleFiles<&str, &str>) -> Diagnostic<usize>;
 }
 
 impl ToDiagnostic for LexError {
-    type T = usize;
-
-    fn to_diagnostic(&self, _files: &SimpleFiles<&str, &str>) -> Diagnostic<Self::T> {
+    fn to_diagnostic(&self, _files: &SimpleFiles<&str, &str>) -> Diagnostic<usize> {
         match self {
             LexError::UnexpectedChar(expected, cursor) => {
                 let article = match expected.chars().next().unwrap() {
@@ -190,6 +187,7 @@ impl ToDiagnostic for LexError {
 fn str_to_keyword(s: &str) -> Option<Keyword> {
     match s {
         "case" => Some(Keyword::Case),
+        "const" => Some(Keyword::Const),
         "do" => Some(Keyword::Do),
         "each" => Some(Keyword::Each),
         "of" => Some(Keyword::Of),
@@ -334,7 +332,7 @@ impl Lexer {
                     };
 
                     let token = match identifier.as_str() {
-                        "case" | "do" | "each" | "of" => Token::Keyword {
+                        "case" | "const" | "do" | "each" | "of" => Token::Keyword {
                             name: str_to_keyword(identifier.as_str()).unwrap(),
                             span,
                         },
@@ -623,7 +621,7 @@ impl Lexer {
                     if self.scanner.try_consume('.') {
                         if self.scanner.try_consume('=') {
                             tokens.push(Token::RangeOperator {
-                                mode: RangeOperator::Inclusive,
+                                mode: RangeMode::Inclusive,
                                 span: Span {
                                     line,
                                     column,
@@ -632,7 +630,7 @@ impl Lexer {
                             });
                         } else if self.scanner.try_consume('<') {
                             tokens.push(Token::RangeOperator {
-                                mode: RangeOperator::Exclusive,
+                                mode: RangeMode::Exclusive,
                                 span: Span {
                                     line,
                                     column,
@@ -1127,7 +1125,7 @@ test -> "test" # this is an inline comment
         assert_eq!(
             lexer.next(),
             Token::RangeOperator {
-                mode: RangeOperator::Inclusive,
+                mode: RangeMode::Inclusive,
                 span: Span {
                     line: 1,
                     column: 2,
@@ -1165,7 +1163,7 @@ test -> "test" # this is an inline comment
         assert_eq!(
             lexer.next(),
             Token::RangeOperator {
-                mode: RangeOperator::Exclusive,
+                mode: RangeMode::Exclusive,
                 span: Span {
                     line: 1,
                     column: 2,
