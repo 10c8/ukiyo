@@ -47,6 +47,12 @@ pub enum Token {
     Regex {
         // /[^/]+/
         value: &'static str,
+        is_case_insensitive: bool,
+        is_global: bool,
+        is_multiline: bool,
+        is_dotall: bool,
+        // is_unicode: bool,
+        is_sticky: bool,
         span: Span,
     },
     Number {
@@ -120,7 +126,7 @@ impl std::fmt::Display for Token {
             Token::Identifier { .. } => write!(f, "identifier"),
             Token::Keyword { .. } => write!(f, "keyword"),
             Token::String { .. } => write!(f, "string"),
-            Token::Regex { .. } => write!(f, "regex"),
+            Token::Regex { .. } => write!(f, "regular expression"),
             Token::Number { .. } => write!(f, "number"),
             Token::Symbol { value, .. } => write!(f, "`{}`", value),
             Token::RangeOperator { .. } => write!(f, "range"),
@@ -515,6 +521,13 @@ impl Lexer {
                 '/' => {
                     let mut regex = String::new();
 
+                    let mut is_case_insensitive = false;
+                    let mut is_global = false;
+                    let mut is_multiline = false;
+                    let mut is_dotall = false;
+                    // let mut is_unicode = false;
+                    let mut is_sticky = false;
+
                     self.scanner.next();
 
                     while let Some(chr) = self.scanner.peek() {
@@ -541,6 +554,41 @@ impl Lexer {
                             }
                             '/' => {
                                 self.scanner.next();
+
+                                loop {
+                                    if let Some(chr) = self.scanner.peek() {
+                                        match chr {
+                                            'i' => {
+                                                is_case_insensitive = true;
+                                                self.scanner.next();
+                                            }
+                                            'g' => {
+                                                is_global = true;
+                                                self.scanner.next();
+                                            }
+                                            'm' => {
+                                                is_multiline = true;
+                                                self.scanner.next();
+                                            }
+                                            's' => {
+                                                is_dotall = true;
+                                                self.scanner.next();
+                                            }
+                                            // 'u' => {
+                                            //     is_unicode = true;
+                                            //     self.scanner.next();
+                                            // }
+                                            'y' => {
+                                                is_sticky = true;
+                                                self.scanner.next();
+                                            }
+                                            _ => break,
+                                        }
+                                    } else {
+                                        break;
+                                    }
+                                }
+
                                 break;
                             }
                             _ => {
@@ -558,6 +606,12 @@ impl Lexer {
 
                     tokens.push(Token::Regex {
                         value: Box::leak(regex.into_boxed_str()),
+                        is_case_insensitive,
+                        is_global,
+                        is_multiline,
+                        is_dotall,
+                        // is_unicode,
+                        is_sticky,
                         span,
                     });
                 }
@@ -930,17 +984,23 @@ test -> "test" # this is an inline comment
 
     #[test]
     fn test_regex() {
-        let mut lexer = Lexer::new(r#"/[a-zA-Z]+/"#);
+        let mut lexer = Lexer::new(r#"/[a-zA-Z]+/gmi"#);
         lexer.lex().expect("failed to lex input");
 
         assert_eq!(
             lexer.next(),
             Token::Regex {
                 value: "[a-zA-Z]+",
+                is_case_insensitive: true,
+                is_global: true,
+                is_multiline: true,
+                is_dotall: false,
+                // is_unicode: false,
+                is_sticky: false,
                 span: Span {
                     line: 1,
                     column: 1,
-                    range: (0, 11),
+                    range: (0, 14),
                 },
             },
         );

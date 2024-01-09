@@ -77,6 +77,16 @@ pub enum AstNode<'a> {
         format: bool,
         range: Range,
     },
+    Regex {
+        value: &'a str,
+        is_case_insensitive: bool,
+        is_global: bool,
+        is_multiline: bool,
+        is_dotall: bool,
+        // is_unicode: bool,
+        is_sticky: bool,
+        range: Range,
+    },
     NumLit {
         value: f64,
         range: Range,
@@ -113,6 +123,7 @@ impl<'a> AstNode<'a> {
             | AstNode::IterationOp { range, .. }
             | AstNode::Ident { range, .. }
             | AstNode::StrLit { range, .. }
+            | AstNode::Regex { range, .. }
             | AstNode::NumLit { range, .. }
             | AstNode::List { range, .. }
             | AstNode::Record { range, .. }
@@ -135,14 +146,14 @@ pub enum ParseError {
 }
 
 /// Runs a parser, propagating unrecoverable errors. (For internal use by macros.)
-macro_rules! parse_cut {
+macro_rules! parse {
     ($self:ident: $parser:ident) => {{
         let cursor = $self.lexer.cursor();
         match $self.$parser() {
             Ok(success) => Ok(success),
             Err(err) => {
                 if let ParseError::Cut(_, _) = err {
-                    // Unrecoverable error, propagate it
+                    // Unrecoverable error
                     $self.set_cut_error(Some(err));
                     return Err(ParseError::Fail);
                 }
@@ -167,10 +178,10 @@ macro_rules! cut {
 
 /// Matches the next token against a pattern. On success, returns `Token`.
 macro_rules! token {
-    ($first_exp:literal $(, $rest_exp:literal)*; $self:ident: $token:pat) => {
+    ($name:literal; $self:ident: $token:pat) => {
         match $self.lexer.peek() {
             $token => Ok($self.lexer.next()),
-            _ => Err(ParseError::Unexpected { expected: &[$first_exp $(, $rest_exp)*] }),
+            _ => Err(ParseError::Unexpected { expected: &[$name] }),
         }
     };
 }
@@ -223,9 +234,9 @@ macro_rules! peek {
 /// Tries a list of parsers and stops on the first success.
 macro_rules! any {
     ($self:ident: $first:ident, $first_exp:literal $(| $rest:ident, $rest_exp:literal)*) => {{
-        if let Ok(success) = parse_cut!($self: $first) {
+        if let Ok(success) = parse!($self: $first) {
             Ok(success)
-        } $(else if let Ok(success) = parse_cut!($self: $rest) {
+        } $(else if let Ok(success) = parse!($self: $rest) {
             Ok(success)
         })* else {
             Err(ParseError::Unexpected {
@@ -241,7 +252,7 @@ macro_rules! sep {
         let mut results = Vec::new();
 
         loop {
-            let result = parse_cut!($self: $parser);
+            let result = parse!($self: $parser);
             if result.is_err() {
                 break;
             }
@@ -263,7 +274,7 @@ macro_rules! sep {
         let mut results = Vec::new();
 
         loop {
-            let result = parse_cut!($self: $parser);
+            let result = parse!($self: $parser);
             if result.is_err() {
                 break;
             }
@@ -292,7 +303,7 @@ macro_rules! many {
         let mut results = Vec::new();
 
         loop {
-            let result = parse_cut!($self: $parser).map(|success| results.push(success));
+            let result = parse!($self: $parser).map(|success| results.push(success));
             if result.is_err() {
                 break;
             }
@@ -573,7 +584,7 @@ impl Parser {
     fn parse_expr_stmt(&mut self) -> PResult {
         let expr = any! {
             self: parse_func_call, "function call"
-                | parse_iteration_op, "iteration operation"
+                | parse_iteration_op, "iterator"
                 | parse_expr, "expression"
         }?;
         let range = expr.range();
@@ -660,7 +671,7 @@ impl Parser {
             self: parse_block, "indented block"
                 | parse_case, "case statement"
                 | parse_func_decl, "function declaration"
-                | parse_iteration_op, "iteration operation"
+                | parse_iteration_op, "iterator"
                 | parse_func_call, "function call"
                 | parse_expr, "expression"
         };
@@ -800,8 +811,10 @@ impl Parser {
 
     fn parse_case_pattern_expr(&mut self) -> PResult {
         any! {
-            self: parse_identifier, "identifier"
+            self: parse_range, "range"
+                | parse_identifier, "identifier"
                 | parse_string, "string"
+                | parse_regex, "regular expression"
                 | parse_number, "number"
         }
     }
@@ -936,6 +949,28 @@ impl Parser {
 
     fn parse_string_part(&mut self) -> Result<(&'static str, Span), ParseError> {
         map!(self: Token::String { value, span }, "string" => (value, span))
+    }
+
+    fn parse_regex(&mut self) -> PResult {
+        map!(self: Token::Regex {
+            value,
+            is_case_insensitive,
+            is_global,
+            is_multiline,
+            is_dotall,
+            is_sticky,
+            span,
+        }, "regular expression" => {
+            AstNode::Regex {
+                value,
+                is_case_insensitive,
+                is_global,
+                is_multiline,
+                is_dotall,
+                is_sticky,
+                range: span.range,
+            }
+        })
     }
 
     fn parse_number(&mut self) -> PResult {
@@ -1120,7 +1155,7 @@ impl Parser {
 
         let expr = any! {
             self: parse_func_call, "function call"
-                | parse_iteration_op, "iteration operation"
+                | parse_iteration_op, "iterator"
                 | parse_expr, "expression"
         };
         let expr = self.cut(expr)?;
