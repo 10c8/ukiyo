@@ -7,6 +7,8 @@ use codespan_reporting::{
 
 use crate::lexer::*;
 
+const UNDERLINE: &str = "_";
+
 type Range = (usize, usize);
 
 #[derive(Debug, Clone, PartialEq)]
@@ -17,68 +19,68 @@ pub enum CasePatternKind {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub enum AstNode<'a> {
+pub enum AstNode {
     Prog {
-        body: Vec<AstNode<'a>>,
+        body: Vec<AstNode>,
         range: Range,
     },
     ExprStmt {
-        expr: Box<AstNode<'a>>,
+        expr: Box<AstNode>,
         range: Range,
     },
     Block {
-        body: Vec<AstNode<'a>>,
+        body: Vec<AstNode>,
         range: Range,
     },
     FuncDecl {
-        id: Option<Box<AstNode<'a>>>,
+        id: Option<Box<AstNode>>,
         is_const: bool,
-        params: Vec<AstNode<'a>>,
-        body: Box<AstNode<'a>>,
+        param: Option<Box<AstNode>>,
+        body: Box<AstNode>,
         range: Range,
     },
     Lambda {
-        params: Vec<AstNode<'a>>,
-        body: Box<AstNode<'a>>,
+        param: Box<AstNode>,
+        body: Box<AstNode>,
         range: Range,
     },
     Case {
-        expr: Box<AstNode<'a>>,
-        cases: Vec<AstNode<'a>>,
+        expr: Box<AstNode>,
+        cases: Vec<AstNode>,
         range: Range,
     },
     CaseBranch {
-        pattern: Box<AstNode<'a>>,
-        body: Box<AstNode<'a>>,
+        pattern: Box<AstNode>,
+        body: Box<AstNode>,
         range: Range,
     },
     CasePattern {
         kind: CasePatternKind,
-        expr: Box<AstNode<'a>>,
+        expr: Box<AstNode>,
         range: Range,
     },
     FuncCall {
-        callee: Box<AstNode<'a>>,
-        arg: Option<Box<AstNode<'a>>>,
+        callee: Box<AstNode>,
+        arg: Option<Box<AstNode>>,
         range: Range,
     },
     IterationOp {
-        id: Box<AstNode<'a>>,
-        expr: Box<AstNode<'a>>,
-        body: Box<AstNode<'a>>,
+        id: Box<AstNode>,
+        expr: Box<AstNode>,
+        body: Box<AstNode>,
         range: Range,
     },
     Ident {
-        name: &'a str,
+        name: String,
         range: Range,
     },
     StrLit {
-        value: &'a str,
-        format: bool,
+        value: String,
+        is_format: bool,
         range: Range,
     },
     Regex {
-        value: &'a str,
+        value: String,
         is_case_insensitive: bool,
         is_global: bool,
         is_multiline: bool,
@@ -92,23 +94,23 @@ pub enum AstNode<'a> {
         range: Range,
     },
     List {
-        items: Vec<AstNode<'a>>,
+        items: Vec<AstNode>,
         range: Range,
     },
     Record {
-        keys: Vec<AstNode<'a>>,
-        values: Vec<AstNode<'a>>,
+        keys: Vec<AstNode>,
+        values: Vec<AstNode>,
         range: Range,
     },
     Range {
         mode: RangeMode,
-        start: Box<AstNode<'a>>,
-        end: Box<AstNode<'a>>,
+        start: Box<AstNode>,
+        end: Box<AstNode>,
         range: Range,
     },
 }
 
-impl<'a> AstNode<'a> {
+impl AstNode {
     pub fn range(&self) -> Range {
         match self {
             AstNode::Prog { range, .. }
@@ -132,7 +134,7 @@ impl<'a> AstNode<'a> {
     }
 }
 
-type PResult = Result<AstNode<'static>, ParseError>;
+type PResult = Result<AstNode, ParseError>;
 
 #[derive(Debug, Clone)]
 pub enum ParseError {
@@ -217,11 +219,7 @@ macro_rules! peek {
 
         $self.lexer.set_cursor(cursor);
 
-        if result.is_err() {
-            Err(result.err().unwrap())
-        } else {
-            Ok(result.ok().unwrap())
-        }
+        result
     }};
     ($n:expr, $self:ident: $token:pat) => {
         match $self.lexer.peek_nth($n) {
@@ -303,10 +301,12 @@ macro_rules! many {
         let mut results = Vec::new();
 
         loop {
-            let result = parse!($self: $parser).map(|success| results.push(success));
+            let result = parse!($self: $parser);
             if result.is_err() {
                 break;
             }
+
+            results.push(result.unwrap());
         }
 
         if !$n.contains(&results.len()) {
@@ -385,14 +385,17 @@ impl Parser {
         let span;
         let err;
 
-        if let Some(ParseError::Cut(inner_err, inner_tok)) = self.cut_error.take() {
-            tok = inner_tok;
-            span = inner_tok.span();
-            err = *inner_err;
-        } else {
-            tok = self.lexer.peek();
-            span = tok.span();
-            err = error;
+        match self.cut_error.take() {
+            Some(ParseError::Cut(inner_err, inner_tok)) => {
+                tok = inner_tok.clone();
+                span = inner_tok.span();
+                err = *inner_err;
+            }
+            _ => {
+                tok = self.lexer.peek();
+                span = tok.span();
+                err = error;
+            }
         }
 
         let mut files = SimpleFiles::new();
@@ -583,8 +586,8 @@ impl Parser {
 
     fn parse_expr_stmt(&mut self) -> PResult {
         let expr = any! {
-            self: parse_func_call, "function call"
-                | parse_iteration_op, "iterator"
+            self: parse_iteration_op, "iterator"
+                | parse_func_call, "function call"
                 | parse_expr, "expression"
         }?;
         let range = expr.range();
@@ -663,7 +666,8 @@ impl Parser {
             _ => unreachable!(),
         };
 
-        let params = many!(0.., self: parse_identifier)?;
+        // let params = many!(0.., self: parse_identifier)?;
+        let param = opt!(self: parse_identifier);
 
         token!("`->`"; self: Token::AssignmentArrow { .. })?;
 
@@ -683,12 +687,12 @@ impl Parser {
             Some(id) => AstNode::FuncDecl {
                 id: Some(Box::new(id)),
                 is_const: const_marker.is_some(),
-                params,
+                param: param.map(Box::new),
                 body: Box::new(body),
                 range,
             },
             None => AstNode::Lambda {
-                params,
+                param: param.map(Box::new).unwrap(),
                 body: Box::new(body),
                 range,
             },
@@ -720,7 +724,7 @@ impl Parser {
         })
     }
 
-    fn parse_case_cases(&mut self) -> Result<Vec<AstNode<'static>>, ParseError> {
+    fn parse_case_cases(&mut self) -> Result<Vec<AstNode>, ParseError> {
         let mut cases = Vec::new();
 
         loop {
@@ -764,12 +768,24 @@ impl Parser {
     }
 
     fn parse_case_pattern(&mut self) -> PResult {
-        if opt!(self: Token::Identifier { name: "_", .. }).is_some() {
+        if map! {
+            self: Token::Identifier { name, .. }, "identifier" => {
+                match name.as_str() {
+                    UNDERLINE => Ok(()),
+                    _ => Err(()),
+                }
+            }
+        }
+        .is_ok()
+        {
             let range = self.lexer.peek().span().range;
 
             return Ok(AstNode::CasePattern {
                 kind: CasePatternKind::Empty,
-                expr: Box::new(AstNode::Ident { name: "_", range }),
+                expr: Box::new(AstNode::Ident {
+                    name: String::from(UNDERLINE),
+                    range,
+                }),
                 range,
             });
         }
@@ -819,7 +835,7 @@ impl Parser {
         }
     }
 
-    fn parse_case_pattern_or(&mut self) -> Result<Vec<AstNode<'static>>, ParseError> {
+    fn parse_case_pattern_or(&mut self) -> Result<Vec<AstNode>, ParseError> {
         let mut items = Vec::new();
 
         loop {
@@ -932,22 +948,24 @@ impl Parser {
     fn parse_string(&mut self) -> PResult {
         let format_marker = opt!(self: Token::Symbol { value: '$', .. });
 
-        let (value, span) = if format_marker.is_some() {
-            let (value, mut span) = cut!(self: parse_string_part)?;
-            span.range.0 = format_marker.unwrap().span().range.0;
-            (value, span)
-        } else {
-            self.parse_string_part()?
+        let (value, span) = match format_marker.clone() {
+            Some(Token::Symbol { span: fmt_span, .. }) => {
+                let (value, mut span) = cut!(self: parse_string_part)?;
+                span.range.0 = fmt_span.range.0;
+                (value, span)
+            }
+            Some(_) => unreachable!(),
+            None => self.parse_string_part()?,
         };
 
         Ok(AstNode::StrLit {
             value,
-            format: format_marker.is_some(),
+            is_format: format_marker.is_some(),
             range: span.range,
         })
     }
 
-    fn parse_string_part(&mut self) -> Result<(&'static str, Span), ParseError> {
+    fn parse_string_part(&mut self) -> Result<(String, Span), ParseError> {
         map!(self: Token::String { value, span }, "string" => (value, span))
     }
 
@@ -1016,7 +1034,7 @@ impl Parser {
         token!("`]`"; self: Token::Symbol { value: ']', .. })
     }
 
-    fn parse_list_items(&mut self) -> Result<Vec<AstNode<'static>>, ParseError> {
+    fn parse_list_items(&mut self) -> Result<Vec<AstNode>, ParseError> {
         let mut items = Vec::new();
 
         if peek!(0, self: Token::Symbol { value: ']', .. }).is_some() {
@@ -1068,9 +1086,7 @@ impl Parser {
         token!("`}`"; self: Token::Symbol { value: '}', .. })
     }
 
-    fn parse_record_items(
-        &mut self,
-    ) -> Result<(Vec<AstNode<'static>>, Vec<AstNode<'static>>), ParseError> {
+    fn parse_record_items(&mut self) -> Result<(Vec<AstNode>, Vec<AstNode>), ParseError> {
         let mut keys = Vec::new();
         let mut values = Vec::new();
 
@@ -1183,9 +1199,11 @@ impl Parser {
                 name,
                 range: (start.span().range.0, end.span().range.1),
             },
-            AstNode::StrLit { value, format, .. } => AstNode::StrLit {
+            AstNode::StrLit {
+                value, is_format, ..
+            } => AstNode::StrLit {
                 value,
-                format,
+                is_format,
                 range: (start.span().range.0, end.span().range.1),
             },
             AstNode::NumLit { value, .. } => AstNode::NumLit {

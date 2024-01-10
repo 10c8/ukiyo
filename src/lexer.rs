@@ -27,11 +27,11 @@ pub enum RangeMode {
     Exclusive,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Token {
     Identifier {
         // [a-zA-Z_][a-zA-Z0-9_]*
-        name: &'static str,
+        name: String,
         span: Span,
     },
     Keyword {
@@ -41,12 +41,12 @@ pub enum Token {
     },
     String {
         // "[^"]*"
-        value: &'static str,
+        value: String,
         span: Span,
     },
     Regex {
         // /[^/]+/
-        value: &'static str,
+        value: String,
         is_case_insensitive: bool,
         is_global: bool,
         is_multiline: bool,
@@ -343,7 +343,7 @@ impl Lexer {
                             span,
                         },
                         _ => Token::Identifier {
-                            name: Box::leak(identifier.into_boxed_str()),
+                            name: identifier,
                             span,
                         },
                     };
@@ -425,7 +425,7 @@ impl Lexer {
                     };
 
                     tokens.push(Token::String {
-                        value: Box::leak(string.into_boxed_str()),
+                        value: string,
                         span,
                     });
                 }
@@ -507,7 +507,7 @@ impl Lexer {
                         };
 
                         tokens.push(Token::String {
-                            value: Box::leak(string.into_boxed_str()),
+                            value: string,
                             span,
                         });
                     } else {
@@ -605,7 +605,7 @@ impl Lexer {
                     };
 
                     tokens.push(Token::Regex {
-                        value: Box::leak(regex.into_boxed_str()),
+                        value: regex,
                         is_case_insensitive,
                         is_global,
                         is_multiline,
@@ -741,7 +741,7 @@ impl Lexer {
 
                     if self.scanner.try_consume('%') {
                         tokens.push(Token::Identifier {
-                            name: "%%",
+                            name: "%%".to_string(),
                             span: Span {
                                 line,
                                 column,
@@ -783,39 +783,46 @@ impl Lexer {
     }
 
     /// Returns the token at the current cursor position.
-    pub fn peek(&mut self) -> Token {
-        self.tokens.get(self.cursor).copied().unwrap_or(Token::EOF {
-            span: Span {
-                line: self.scanner.line(),
-                column: self.scanner.column(),
-                range: (self.scanner.cursor(), self.scanner.cursor()),
-            },
-        })
-    }
-
-    /// Returns the token at the given cursor position.
-    pub fn peek_nth(&mut self, n: usize) -> Token {
+    pub fn peek(&self) -> Token {
         self.tokens
-            .get(self.cursor + n)
-            .copied()
-            .unwrap_or(Token::EOF {
+            .get(self.cursor)
+            .unwrap_or(&Token::EOF {
                 span: Span {
                     line: self.scanner.line(),
                     column: self.scanner.column(),
                     range: (self.scanner.cursor(), self.scanner.cursor()),
                 },
             })
+            .clone()
+    }
+
+    /// Returns the token at the given cursor position.
+    pub fn peek_nth(&self, n: usize) -> Token {
+        self.tokens
+            .get(self.cursor + n)
+            .unwrap_or(&Token::EOF {
+                span: Span {
+                    line: self.scanner.line(),
+                    column: self.scanner.column(),
+                    range: (self.scanner.cursor(), self.scanner.cursor()),
+                },
+            })
+            .clone()
     }
 
     /// Returns the token at the current cursor position and advances the cursor.
     pub fn next(&mut self) -> Token {
-        let token = self.tokens.get(self.cursor).copied().unwrap_or(Token::EOF {
-            span: Span {
-                line: self.scanner.line(),
-                column: self.scanner.column(),
-                range: (self.scanner.cursor(), self.scanner.cursor()),
-            },
-        });
+        let token = self
+            .tokens
+            .get(self.cursor)
+            .unwrap_or(&Token::EOF {
+                span: Span {
+                    line: self.scanner.line(),
+                    column: self.scanner.column(),
+                    range: (self.scanner.cursor(), self.scanner.cursor()),
+                },
+            })
+            .clone();
         self.cursor += 1;
 
         token
@@ -838,7 +845,7 @@ test -> "test" # this is an inline comment
         assert_eq!(
             lexer.next(),
             Token::Identifier {
-                name: "test",
+                name: "test".to_string(),
                 span: Span {
                     line: 2,
                     column: 1,
@@ -859,7 +866,7 @@ test -> "test" # this is an inline comment
         assert_eq!(
             lexer.next(),
             Token::String {
-                value: "test",
+                value: "test".to_string(),
                 span: Span {
                     line: 2,
                     column: 9,
@@ -878,7 +885,7 @@ test -> "test" # this is an inline comment
         assert_eq!(
             lexer.next(),
             Token::Identifier {
-                name: "hello_World23",
+                name: "hello_World23".to_string(),
                 span: Span {
                     line: 1,
                     column: 1,
@@ -916,7 +923,7 @@ test -> "test" # this is an inline comment
         assert_eq!(
             lexer.next(),
             Token::String {
-                value: "hello world\n",
+                value: "hello world\n".to_string(),
                 span: Span {
                     line: 1,
                     column: 1,
@@ -935,7 +942,7 @@ test -> "test" # this is an inline comment
         assert_eq!(
             lexer.next(),
             Token::String {
-                value: "hello \"world\"\n",
+                value: "hello \"world\"\n".to_string(),
                 span: Span {
                     line: 1,
                     column: 1,
@@ -971,7 +978,7 @@ test -> "test" # this is an inline comment
         assert_eq!(
             lexer.next(),
             Token::String {
-                value: "hello \"world\"\nthis is cool!",
+                value: "hello \"world\"\nthis is cool!".to_string(),
                 span: Span {
                     line: 2,
                     column: 3,
@@ -990,7 +997,7 @@ test -> "test" # this is an inline comment
         assert_eq!(
             lexer.next(),
             Token::Regex {
-                value: "[a-zA-Z]+",
+                value: "[a-zA-Z]+".to_string(),
                 is_case_insensitive: true,
                 is_global: true,
                 is_multiline: true,
@@ -1299,7 +1306,7 @@ test -> "test" # this is an inline comment
         assert_eq!(
             lexer.next(),
             Token::Identifier {
-                name: "test",
+                name: "test".to_string(),
                 span: Span {
                     line: 2,
                     column: 1,
@@ -1320,7 +1327,7 @@ test -> "test" # this is an inline comment
         assert_eq!(
             lexer.next(),
             Token::Identifier {
-                name: "test",
+                name: "test".to_string(),
                 span: Span {
                     line: 5,
                     column: 1,
