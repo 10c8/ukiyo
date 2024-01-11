@@ -380,7 +380,7 @@ impl Parser {
         Ok(program)
     }
 
-    pub fn display_error(&mut self, error: ParseError) {
+    pub fn display_error(&mut self, files: SimpleFiles<&str, &str>, error: ParseError) {
         let tok;
         let span;
         let err;
@@ -398,9 +398,6 @@ impl Parser {
             }
         }
 
-        let mut files = SimpleFiles::new();
-        let src_id = files.add("src", self.lexer.source().to_string());
-
         let writer = StandardStream::stderr(ColorChoice::Auto);
         let config = Config::default();
 
@@ -408,7 +405,7 @@ impl Parser {
             Token::EOF { span } => {
                 let diagnostic = Diagnostic::error()
                     .with_message("Parsing Error: Unexpected end of file.")
-                    .with_labels(vec![Label::primary(src_id, span.range.0..span.range.1)]);
+                    .with_labels(vec![Label::primary(0, span.range.0..span.range.1)]);
 
                 term::emit(&mut writer.lock(), &config, &files, &diagnostic).unwrap();
                 return;
@@ -418,7 +415,7 @@ impl Parser {
                     let diagnostic = Diagnostic::error()
                         .with_code("parse")
                         .with_message("Wrong indentation.")
-                        .with_labels(vec![Label::primary(src_id, span.range.0..span.range.1)])
+                        .with_labels(vec![Label::primary(0, span.range.0..span.range.1)])
                         .with_notes(vec![format!(
                             "Expected indent of size {}, found {}.",
                             self.indent_stack.last().unwrap_or(&0),
@@ -437,7 +434,7 @@ impl Parser {
             ParseError::Fail => Diagnostic::error()
                 .with_code("parse")
                 .with_message(format!("Unexpected {}.", tok.to_string()))
-                .with_labels(vec![Label::primary(src_id, span.range.0..span.range.1)])
+                .with_labels(vec![Label::primary(0, span.range.0..span.range.1)])
                 .with_notes(vec!["Note: This is probably a syntax error.".to_string()]),
             ParseError::Unexpected { expected } => {
                 let expected = {
@@ -462,17 +459,17 @@ impl Parser {
                 Diagnostic::error()
                     .with_code("parse")
                     .with_message(format!("Unexpected {}.", tok.to_string()))
-                    .with_labels(vec![Label::primary(src_id, span.range.0..span.range.1)])
+                    .with_labels(vec![Label::primary(0, span.range.0..span.range.1)])
                     .with_notes(vec![expected])
             }
             ParseError::Forbidden(reason) => Diagnostic::error()
                 .with_code("parse")
                 .with_message(reason)
-                .with_labels(vec![Label::primary(src_id, span.range.0..span.range.1)]),
+                .with_labels(vec![Label::primary(0, span.range.0..span.range.1)]),
             ParseError::InvalidIndent(size) => Diagnostic::error()
                 .with_code("parse")
                 .with_message("Wrong indentation.")
-                .with_labels(vec![Label::primary(src_id, span.range.0..span.range.1)])
+                .with_labels(vec![Label::primary(0, span.range.0..span.range.1)])
                 .with_notes(vec![format!(
                     "Expected indent of size {}, found {}.",
                     self.indent_stack.last().unwrap_or(&0) + self.indent_size,
@@ -481,7 +478,7 @@ impl Parser {
             ParseError::InvalidDedent(size) => Diagnostic::error()
                 .with_code("parse")
                 .with_message("Wrong indentation.")
-                .with_labels(vec![Label::primary(src_id, span.range.0..span.range.1)])
+                .with_labels(vec![Label::primary(0, span.range.0..span.range.1)])
                 .with_notes(vec![format!(
                     "Expected indent of size {}, found {}.",
                     self.indent_stack.last().unwrap_or(&0),

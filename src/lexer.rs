@@ -206,7 +206,6 @@ pub struct Lexer {
     scanner: Scanner,
     tokens: Vec<Token>,
     cursor: usize,
-    source: String,
 }
 
 impl Lexer {
@@ -218,7 +217,6 @@ impl Lexer {
             scanner,
             tokens,
             cursor: 0,
-            source: input.to_string(),
         }
     }
 
@@ -775,11 +773,6 @@ impl Lexer {
     /// Sets the cursor position.
     pub fn set_cursor(&mut self, cursor: usize) {
         self.cursor = cursor;
-    }
-
-    /// Returns the source code.
-    pub fn source(&self) -> &str {
-        &self.source
     }
 
     /// Returns the token at the current cursor position.
