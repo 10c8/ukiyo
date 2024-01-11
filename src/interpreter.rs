@@ -9,6 +9,7 @@ use codespan_reporting::{
         Config,
     },
 };
+use rand::Rng;
 
 use crate::{
     lexer::{Lexer, RangeMode},
@@ -126,7 +127,13 @@ impl Environment {
 
     pub fn load_stdlib(&mut self) {
         // Math functions
+        native_fn!("add"; self: Self::std_fn_add);
+        native_fn!("sub"; self: Self::std_fn_sub);
+        native_fn!("mul"; self: Self::std_fn_mul);
+        native_fn!("div"; self: Self::std_fn_div);
         native_fn!("mod"; self: Self::std_fn_mod);
+        native_fn!("rand"; self: Self::std_fn_rand);
+        native_fn!("randf"; self: Self::std_fn_randf);
 
         // List functions
         native_fn!("len"; self: Self::std_fn_len);
@@ -150,6 +157,51 @@ impl Environment {
         self.value_ranges.get(name)
     }
 
+    // Stdlib: Math
+    fn std_fn_add(args: Vec<Value>, range: Range) -> IResult {
+        native_arg_count!("add"; args == 2; range);
+
+        let a = native_arg!("add"; args @ 0 => Number @ range);
+        let b = native_arg!("add"; args @ 1 => Number @ range);
+
+        let result = a + b;
+
+        Ok(Value::Number((result as i64) as f64))
+    }
+
+    fn std_fn_sub(args: Vec<Value>, range: Range) -> IResult {
+        native_arg_count!("sub"; args == 2; range);
+
+        let a = native_arg!("sub"; args @ 0 => Number @ range);
+        let b = native_arg!("sub"; args @ 1 => Number @ range);
+
+        let result = a - b;
+
+        Ok(Value::Number((result as i64) as f64))
+    }
+
+    fn std_fn_mul(args: Vec<Value>, range: Range) -> IResult {
+        native_arg_count!("mul"; args == 2; range);
+
+        let a = native_arg!("mul"; args @ 0 => Number @ range);
+        let b = native_arg!("mul"; args @ 1 => Number @ range);
+
+        let result = a * b;
+
+        Ok(Value::Number((result as i64) as f64))
+    }
+
+    fn std_fn_div(args: Vec<Value>, range: Range) -> IResult {
+        native_arg_count!("div"; args == 2; range);
+
+        let a = native_arg!("div"; args @ 0 => Number @ range);
+        let b = native_arg!("div"; args @ 1 => Number @ range);
+
+        let result = a / b;
+
+        Ok(Value::Number((result as i64) as f64))
+    }
+
     fn std_fn_mod(args: Vec<Value>, range: Range) -> IResult {
         native_arg_count!("mod"; args == 2; range);
 
@@ -159,12 +211,48 @@ impl Environment {
         Ok(Value::Number(a % b))
     }
 
+    fn std_fn_rand(args: Vec<Value>, range: Range) -> IResult {
+        native_arg_count!("rand"; args == 2; range);
+
+        let min = native_arg!("rand"; args @ 0 => Number @ range);
+        let max = native_arg!("rand"; args @ 1 => Number @ range);
+
+        let mut rng = rand::thread_rng();
+        let result = rng.gen_range(*min..*max) as i64;
+
+        Ok(Value::Number(result as f64))
+    }
+
+    fn std_fn_randf(args: Vec<Value>, range: Range) -> IResult {
+        native_arg_count!("randf"; args == 2; range);
+
+        let min = native_arg!("randf"; args @ 0 => Number @ range);
+        let max = native_arg!("randf"; args @ 1 => Number @ range);
+
+        let mut rng = rand::thread_rng();
+        let result = rng.gen_range(*min..*max);
+
+        Ok(Value::Number(result))
+    }
+
+    // Stdlib: List
     fn std_fn_len(args: Vec<Value>, range: Range) -> IResult {
         native_arg_count!("len"; args == 1; range);
 
-        let list = native_arg!("len"; args @ 0 => List @ range);
+        let value = args.get(0).unwrap();
 
-        Ok(Value::Number(list.len() as f64))
+        let result = match value {
+            Value::String(value) => value.len(),
+            Value::List(value) => value.len(),
+            Value::Record(value) => value.len(),
+            _ => Err(InterpreterError::TypeMismatch(
+                range,
+                "string, list or record".to_string(),
+                typeof_value(value),
+            ))?,
+        };
+
+        Ok(Value::Number(result as f64))
     }
 
     fn std_fn_join(args: Vec<Value>, range: Range) -> IResult {
@@ -587,6 +675,9 @@ impl Interpreter {
                 Value::Closure(closure)
             }
             AstNode::Case { expr, cases, .. } => {
+                // TODO: Require every case pattern to be unique
+                // TODO: Require that, for a given expression, all possible cases are covered
+
                 let case_expr = self.eval(expr, environment)?;
 
                 for case in cases {
@@ -651,7 +742,9 @@ impl Interpreter {
                                     }
                                 }
                             }
-                            CasePatternKind::Any => return self.eval(body, environment),
+                            CasePatternKind::Any => {
+                                return self.eval(body, environment);
+                            }
                         },
                         _ => unreachable!(),
                     }
@@ -672,6 +765,7 @@ impl Interpreter {
                 let result = match **callee {
                     AstNode::Ident { ref name, range } => match environment.get(&name) {
                         Some(Value::Closure(closure)) => {
+                            // TODO: Should we handle recursion?
                             self.apply_closure(Some(callee.as_ref()), closure, args)?
                         }
                         Some(Value::NativeFunction(method)) => {

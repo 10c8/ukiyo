@@ -891,7 +891,7 @@ impl Parser {
     fn parse_func_call(&mut self) -> PResult {
         let id = any! {
             self: parse_identifier, "identifier"
-                | parse_par_expr, "expression"
+                | parse_par_func_call, "function call"
         }?;
 
         let args = many!(0.., self: parse_expr)?;
@@ -911,6 +911,32 @@ impl Parser {
         })
     }
 
+    fn parse_par_func_call(&mut self) -> PResult {
+        let start = token!("`(`"; self: Token::Symbol { value: '(', .. })?;
+
+        self.ignore_nl_and_ws()?;
+
+        let result = cut!(self: parse_func_call)?;
+
+        self.ignore_nl_and_ws()?;
+
+        let end = token!("`)`"; self: Token::Symbol { value: ')', .. });
+        let end = self.cut(end)?;
+
+        let range = (start.span().range.0, end.span().range.1);
+
+        let result = match result {
+            AstNode::FuncCall { callee, args, .. } => AstNode::FuncCall {
+                callee,
+                args,
+                range,
+            },
+            _ => unreachable!(),
+        };
+
+        Ok(result)
+    }
+
     fn parse_iteration_op(&mut self) -> PResult {
         let left = self.parse_expr()?;
 
@@ -924,6 +950,7 @@ impl Parser {
         let right = any! {
             self: parse_block, "indented block"
                 | parse_case, "case statement"
+                | parse_func_call, "function call"
                 | parse_expr_stmt, "expression"
         };
         let right = self.cut(right)?;

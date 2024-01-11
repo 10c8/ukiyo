@@ -74,10 +74,10 @@ pub enum Token {
         // ->
         span: Span,
     },
-    ApplicationArrow {
-        // |>
-        span: Span,
-    },
+    // ApplicationArrow {
+    //     // |>
+    //     span: Span,
+    // },
     MatchArrow {
         // =>
         span: Span,
@@ -110,7 +110,7 @@ impl Token {
             | Token::Symbol { span, .. }
             | Token::RangeOperator { span, .. }
             | Token::AssignmentArrow { span, .. }
-            | Token::ApplicationArrow { span, .. }
+            // | Token::ApplicationArrow { span, .. }
             | Token::MatchArrow { span, .. }
             | Token::Newline { span, .. }
             | Token::Indent { span, .. }
@@ -131,7 +131,7 @@ impl std::fmt::Display for Token {
             Token::Symbol { value, .. } => write!(f, "`{}`", value),
             Token::RangeOperator { .. } => write!(f, "range"),
             Token::AssignmentArrow { .. } => write!(f, "`->`"),
-            Token::ApplicationArrow { .. } => write!(f, "`|>`"),
+            // Token::ApplicationArrow { .. } => write!(f, "`|>`"),
             Token::MatchArrow { .. } => write!(f, "`=>`"),
             Token::Newline { .. } => write!(f, "newline"),
             Token::Indent { .. } => write!(f, "indent"),
@@ -714,24 +714,24 @@ impl Lexer {
                 '|' => {
                     self.scanner.next();
 
-                    if self.scanner.try_consume('>') {
-                        tokens.push(Token::ApplicationArrow {
-                            span: Span {
-                                line,
-                                column,
-                                range: (span_start, self.scanner.cursor()),
-                            },
-                        });
-                    } else {
-                        tokens.push(Token::Symbol {
-                            value: '|',
-                            span: Span {
-                                line,
-                                column,
-                                range: (span_start, self.scanner.cursor()),
-                            },
-                        });
-                    }
+                    // if self.scanner.try_consume('>') {
+                    //     tokens.push(Token::ApplicationArrow {
+                    //         span: Span {
+                    //             line,
+                    //             column,
+                    //             range: (span_start, self.scanner.cursor()),
+                    //         },
+                    //     });
+                    // } else {
+                    tokens.push(Token::Symbol {
+                        value: '|',
+                        span: Span {
+                            line,
+                            column,
+                            range: (span_start, self.scanner.cursor()),
+                        },
+                    });
+                    // }
                 }
                 // Context
                 '%' => {
