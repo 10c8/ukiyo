@@ -665,6 +665,25 @@ impl Parser {
 
         let params = many!(0.., self: parse_identifier)?;
 
+        if const_marker.is_some() && !params.is_empty() {
+            let org_span = const_marker.unwrap().span();
+            let culprit = Token::Keyword {
+                name: Keyword::Const,
+                span: Span {
+                    line: org_span.line,
+                    column: org_span.column,
+                    range: (org_span.range.0, params.last().unwrap().range().1),
+                },
+            };
+
+            return Err(ParseError::Cut(
+                Box::new(ParseError::Forbidden(
+                    "A function with parameters cannot be constant.",
+                )),
+                culprit,
+            ));
+        }
+
         token!("`->`"; self: Token::AssignmentArrow { .. })?;
 
         let body = any! {

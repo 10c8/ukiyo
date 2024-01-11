@@ -50,7 +50,7 @@ fn main() {
     */
 
     let example = r#"
-fizzbuzz -> 0..<10 |x|
+const fizzbuzz -> 0..<10 |x|
   case [(mod x 3), (mod x 5)] of
     [0, 0] => "FizzBuzz"
     [0, _] => "Fizz"

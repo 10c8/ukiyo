@@ -30,7 +30,7 @@ pub enum Value {
 impl fmt::Display for Value {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Value::String(value) => write!(f, "{}", value),
+            Value::String(value) => write!(f, "\"{}\"", value),
             Value::Number(value) => write!(f, "{}", value),
             Value::List(items) => {
                 write!(f, "[")?;
@@ -268,7 +268,9 @@ type Range = (usize, usize);
 pub enum InterpreterError {
     UndefinedVariable(String, Range),
     NotCallable(AstNode, Range),
+    NotIterable(Value, Range),
     WrongArgumentCount(Range, usize, usize),
+    TypeMismatch(Range, String, String),
     PatternTypeMismatch(Range, String, String),
     Redeclaration(String, Option<Range>, Range),
     InvalidFunctionName(Range),
@@ -325,6 +327,17 @@ impl Interpreter {
                     .with_message(format!("Cannot call a {}.", typename))
                     .with_labels(vec![Label::primary(0, range.0..range.1)])
             }
+            InterpreterError::NotIterable(value, range) => {
+                let range = match self.fmt_range {
+                    Some(fmt_range) => fmt_range,
+                    None => range,
+                };
+
+                Diagnostic::error()
+                    .with_code("run")
+                    .with_message(format!("Cannot iterate over a {}.", typeof_value(&value)))
+                    .with_labels(vec![Label::primary(0, range.0..range.1)])
+            }
             InterpreterError::WrongArgumentCount(range, expected, got) => {
                 let range = match self.fmt_range {
                     Some(fmt_range) => fmt_range,
@@ -345,6 +358,18 @@ impl Interpreter {
                         },
                         got
                     )])
+            }
+            InterpreterError::TypeMismatch(range, expected, got) => {
+                let range = match self.fmt_range {
+                    Some(fmt_range) => fmt_range,
+                    None => range,
+                };
+
+                Diagnostic::error()
+                    .with_code("run")
+                    .with_message("Type mismatch.")
+                    .with_labels(vec![Label::primary(0, range.0..range.1)])
+                    .with_notes(vec![format!("Expected a {}, got a {}.", expected, got)])
             }
             InterpreterError::PatternTypeMismatch(range, expected, got) => {
                 let range = match self.fmt_range {
@@ -474,6 +499,7 @@ impl Interpreter {
             }
             AstNode::FuncDecl {
                 id: id_node,
+                is_const,
                 params: fn_params,
                 body,
                 ..
@@ -514,14 +540,21 @@ impl Interpreter {
                     }
                 }
 
-                let closure = Value::Closure(Closure {
+                let closure = Closure {
                     params,
                     body: *body.to_owned(),
                     env: environment.to_owned(),
-                });
+                };
+
+                let value = if *is_const {
+                    // TODO: Make it lazy
+                    self.apply_closure(id_node.as_deref(), &closure, vec![])?
+                } else {
+                    Value::Closure(closure)
+                };
 
                 if let Some(id) = id {
-                    environment.set(&id, closure, id_node.as_ref().unwrap().range());
+                    environment.set(&id, value, id_node.as_ref().unwrap().range());
                 }
 
                 Value::Nil
@@ -680,13 +713,18 @@ impl Interpreter {
 
                 result
             }
-            AstNode::IterationOp { id, expr, body, .. } => {
+            AstNode::IterationOp {
+                id,
+                expr: expr_node,
+                body,
+                ..
+            } => {
                 let id = match id.as_ref() {
                     AstNode::Ident { ref name, .. } => name,
                     _ => unreachable!(),
                 };
 
-                let expr = self.eval(expr, environment)?;
+                let expr = self.eval(expr_node, environment)?;
                 match expr {
                     Value::List(items) => {
                         let mut result = Vec::new();
@@ -704,7 +742,27 @@ impl Interpreter {
 
                         Value::List(result)
                     }
-                    _ => panic!("{:#?} is not iterable", expr),
+                    Value::String(value) => {
+                        let mut result = Vec::new();
+
+                        let env = environment.to_owned();
+                        let closure = Closure {
+                            params: vec![id.to_owned()],
+                            body: *body.to_owned(),
+                            env,
+                        };
+
+                        for c in value.chars() {
+                            result.push(self.apply_closure(
+                                None,
+                                &closure,
+                                vec![Value::String(c.to_string())],
+                            )?);
+                        }
+
+                        Value::List(result)
+                    }
+                    _ => Err(InterpreterError::NotIterable(expr, expr_node.range()))?,
                 }
             }
             AstNode::Ident { ref name, range } => {
@@ -766,18 +824,34 @@ impl Interpreter {
                 Value::Record(record)
             }
             AstNode::Range {
-                mode, start, end, ..
+                mode,
+                start: start_node,
+                end: end_node,
+                ..
             } => {
-                let start = match self.eval(start, environment)? {
+                let start = match self.eval(start_node, environment)? {
                     Value::Number(value) => value,
-                    _ => panic!("start is not a number"),
+                    value => {
+                        return Err(InterpreterError::TypeMismatch(
+                            start_node.range(),
+                            "number".to_string(),
+                            typeof_value(&value),
+                        ))
+                    }
                 };
 
-                let end = match self.eval(end, environment)? {
+                let end = match self.eval(end_node, environment)? {
                     Value::Number(value) => value,
-                    _ => panic!("end is not a number"),
+                    value => {
+                        return Err(InterpreterError::TypeMismatch(
+                            end_node.range(),
+                            "number".to_string(),
+                            typeof_value(&value),
+                        ))
+                    }
                 };
 
+                // TODO: Make it lazy
                 let mut result = Vec::new();
 
                 match mode {
@@ -867,7 +941,10 @@ impl Interpreter {
                 self.fmt_range = Some(range);
 
                 let value = self.eval(&ast, environment)?;
-                let value = value.to_string();
+                let value = match value {
+                    Value::String(value) => value,
+                    _ => value.to_string(),
+                };
 
                 self.fmt_range = None;
 
