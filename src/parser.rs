@@ -13,7 +13,7 @@ type Range = (usize, usize);
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum CasePatternKind {
-    Empty,
+    Any,
     Expr,
     Or,
 }
@@ -35,12 +35,12 @@ pub enum AstNode {
     FuncDecl {
         id: Option<Box<AstNode>>,
         is_const: bool,
-        param: Option<Box<AstNode>>,
+        params: Vec<AstNode>,
         body: Box<AstNode>,
         range: Range,
     },
     Lambda {
-        param: Box<AstNode>,
+        params: Vec<AstNode>,
         body: Box<AstNode>,
         range: Range,
     },
@@ -61,7 +61,7 @@ pub enum AstNode {
     },
     FuncCall {
         callee: Box<AstNode>,
-        arg: Option<Box<AstNode>>,
+        args: Vec<AstNode>,
         range: Range,
     },
     IterationOp {
@@ -387,8 +387,8 @@ impl Parser {
 
         match self.cut_error.take() {
             Some(ParseError::Cut(inner_err, inner_tok)) => {
-                tok = inner_tok.clone();
                 span = inner_tok.span();
+                tok = inner_tok;
                 err = *inner_err;
             }
             _ => {
@@ -663,8 +663,7 @@ impl Parser {
             _ => unreachable!(),
         };
 
-        // let params = many!(0.., self: parse_identifier)?;
-        let param = opt!(self: parse_identifier);
+        let params = many!(0.., self: parse_identifier)?;
 
         token!("`->`"; self: Token::AssignmentArrow { .. })?;
 
@@ -684,12 +683,12 @@ impl Parser {
             Some(id) => AstNode::FuncDecl {
                 id: Some(Box::new(id)),
                 is_const: const_marker.is_some(),
-                param: param.map(Box::new),
+                params,
                 body: Box::new(body),
                 range,
             },
             None => AstNode::Lambda {
-                param: param.map(Box::new).unwrap(),
+                params,
                 body: Box::new(body),
                 range,
             },
@@ -778,7 +777,7 @@ impl Parser {
             let range = self.lexer.peek().span().range;
 
             return Ok(AstNode::CasePattern {
-                kind: CasePatternKind::Empty,
+                kind: CasePatternKind::Any,
                 expr: Box::new(AstNode::Ident {
                     name: String::from(UNDERLINE),
                     range,
@@ -796,7 +795,7 @@ impl Parser {
 
             let mut items = Vec::new();
             items.push(first);
-            items.append(&mut rest.clone());
+            items.extend(rest);
 
             Ok(AstNode::CasePattern {
                 kind: CasePatternKind::Or,
@@ -829,6 +828,7 @@ impl Parser {
                 | parse_string, "string"
                 | parse_regex, "regular expression"
                 | parse_number, "number"
+                | parse_list, "list"
         }
     }
 
@@ -871,37 +871,26 @@ impl Parser {
     }
 
     fn parse_func_call(&mut self) -> PResult {
-        let id = self.parse_identifier()?;
-        let range = id.range();
+        let id = any! {
+            self: parse_identifier, "identifier"
+                | parse_par_expr, "expression"
+        }?;
 
-        let mut current = id;
+        let args = many!(0.., self: parse_expr)?;
 
-        loop {
-            let result = opt!(self: parse_expr);
-            if result.is_none() {
-                break;
-            }
+        let range_start = id.range();
+        let range = (
+            range_start.0,
+            args.last()
+                .map(|arg| arg.range().1)
+                .unwrap_or(range_start.1),
+        );
 
-            let arg = result.unwrap();
-            let range = (current.range().0, arg.range().1);
-
-            current = AstNode::FuncCall {
-                callee: Box::new(current),
-                arg: Some(Box::new(arg.clone())),
-                range,
-            };
-        }
-
-        let call = match current {
-            AstNode::Ident { name, .. } => AstNode::FuncCall {
-                callee: Box::new(AstNode::Ident { name, range }),
-                arg: None,
-                range,
-            },
-            _ => current,
-        };
-
-        Ok(call)
+        Ok(AstNode::FuncCall {
+            callee: Box::new(id),
+            args,
+            range,
+        })
     }
 
     fn parse_iteration_op(&mut self) -> PResult {
@@ -945,7 +934,7 @@ impl Parser {
     fn parse_string(&mut self) -> PResult {
         let format_marker = opt!(self: Token::Symbol { value: '$', .. });
 
-        let (value, span) = match format_marker.clone() {
+        let (value, span) = match format_marker {
             Some(Token::Symbol { span: fmt_span, .. }) => {
                 let (value, mut span) = cut!(self: parse_string_part)?;
                 span.range.0 = fmt_span.range.0;
@@ -1167,8 +1156,8 @@ impl Parser {
         self.ignore_nl_and_ws()?;
 
         let expr = any! {
-            self: parse_func_call, "function call"
-                | parse_iteration_op, "iterator"
+            self: parse_iteration_op, "iterator"
+                | parse_func_call, "function call"
                 | parse_expr, "expression"
         };
         let expr = self.cut(expr)?;
@@ -1181,9 +1170,9 @@ impl Parser {
         let expr = match expr {
             // TODO: Add `Lambda`
             // TODO: Add `Case`
-            AstNode::FuncCall { callee, arg, .. } => AstNode::FuncCall {
+            AstNode::FuncCall { callee, args, .. } => AstNode::FuncCall {
                 callee,
-                arg,
+                args,
                 range: (start.span().range.0, end.span().range.1),
             },
             AstNode::IterationOp { id, expr, body, .. } => AstNode::IterationOp {

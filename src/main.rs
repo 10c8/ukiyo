@@ -3,6 +3,8 @@ mod lexer;
 mod parser;
 mod scanner;
 
+use std::time::Instant;
+
 use codespan_reporting::{
     files::SimpleFiles,
     term::{
@@ -10,9 +12,12 @@ use codespan_reporting::{
         termcolor::{ColorChoice, StandardStream},
     },
 };
-use interpreter::Interpreter;
 
-use crate::lexer::ToDiagnostic;
+use crate::{
+    interpreter::{Environment, Interpreter},
+    lexer::{Lexer, ToDiagnostic},
+    parser::Parser,
+};
 
 fn main() {
     /*
@@ -45,16 +50,14 @@ fn main() {
     */
 
     let example = r#"
-fruits -> ["apples", "bananas", "oranges", "limes", "avocado"]
+fizzbuzz -> 0..<10 |x|
+  case [(mod x 3), (mod x 5)] of
+    [0, 0] => "FizzBuzz"
+    [0, _] => "Fizz"
+    [_, 0] => "Buzz"
+    _      => x
 
-fruits |f|
-  color -> case f of
-    "apples"            => "red"
-    "oranges"           => "orange"
-    "bananas" | "limes" => "yellow"
-    _                   => "some color"
-
-  $"{fuck} are {color}"
+join fizzbuzz "\n"
 "#;
 
     let mut files = SimpleFiles::new();
@@ -63,16 +66,22 @@ fruits |f|
     let writer = StandardStream::stderr(ColorChoice::Auto);
     let config = term::Config::default();
 
-    let mut lexer = lexer::Lexer::new(example);
+    let start = Instant::now();
+
+    let mut lexer = Lexer::new(example);
     if let Err(err) = lexer.lex() {
         let diagnostic = err.to_diagnostic(&files);
         term::emit(&mut writer.lock(), &config, &files, &diagnostic).unwrap();
         return;
     }
 
+    println!("Lexer took: {:?}", Instant::now() - start);
+
     // let mut lexer_copy = lexer.clone();
 
-    let mut parser = parser::Parser::new(lexer);
+    let start = Instant::now();
+
+    let mut parser = Parser::new(lexer);
     let result = parser.parse();
     if let Err(err) = result {
         // println!("--- Tokens:");
@@ -85,17 +94,30 @@ fruits |f|
         //     }
         // }
 
-        parser.display_error(err);
+        parser.display_error(files, err);
         return;
     }
 
     let ast = result.unwrap();
 
+    println!("Parser took: {:?}", Instant::now() - start);
+
     // println!("\n--- AST:");
-    // println!("{:#?}", result.unwrap());
+    // println!("{:#?}", ast);
 
-    let mut tail = Interpreter::new(ast);
-    let result = tail.run();
+    let start = Instant::now();
 
-    println!("{}", result);
+    let mut environment = Environment::new();
+    environment.load_stdlib();
+
+    let mut tail = Interpreter::new();
+    let result = tail.eval(&ast, &mut environment);
+    if let Err(err) = result {
+        tail.display_error(files, err);
+        return;
+    }
+
+    println!("Interpreter took: {:?}", Instant::now() - start);
+
+    println!("\n{}", result.unwrap());
 }
