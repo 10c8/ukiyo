@@ -783,26 +783,25 @@ impl Parser {
     }
 
     fn parse_case_pattern(&mut self) -> PResult {
-        if map! {
-            self: Token::Identifier { name, .. }, "identifier" => {
-                match name.as_str() {
-                    UNDERLINE => Ok(()),
-                    _ => Err(()),
-                }
-            }
-        }
-        .is_ok()
-        {
-            let range = self.lexer.peek().span().range;
+        let first = peek!(0, self: Token::Identifier { .. });
+        if let Some(first) = first {
+            match first {
+                Token::Identifier { name, .. } => {
+                    if name == UNDERLINE {
+                        let range = self.lexer.next().span().range;
 
-            return Ok(AstNode::CasePattern {
-                kind: CasePatternKind::Any,
-                expr: Box::new(AstNode::Ident {
-                    name: String::from(UNDERLINE),
-                    range,
-                }),
-                range,
-            });
+                        return Ok(AstNode::CasePattern {
+                            kind: CasePatternKind::Any,
+                            expr: Box::new(AstNode::Ident {
+                                name: String::from(UNDERLINE),
+                                range,
+                            }),
+                            range,
+                        });
+                    }
+                }
+                _ => unreachable!(),
+            }
         }
 
         let first = cut!(self: parse_case_pattern_expr)?;
