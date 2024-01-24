@@ -1,5 +1,3 @@
-use std::{collections::HashMap, fmt};
-
 use codespan_reporting::{
     diagnostic::{Diagnostic, Label},
     files::SimpleFiles,
@@ -10,10 +8,13 @@ use codespan_reporting::{
     },
 };
 use rand::Rng;
+use regex::Regex;
+use rustc_hash::FxHashMap;
 
 use crate::{
-    lexer::{Lexer, RangeMode},
-    parser::{AstNode, CasePatternKind, Parser},
+    lexer::RangeMode,
+    llm::{LLMConfig, LLMType, LLM},
+    parser::{AstNode, CasePatternKind},
 };
 
 #[derive(Debug, Clone, PartialEq)]
@@ -21,15 +22,15 @@ pub enum Value {
     String(String),
     Number(f64),
     List(Vec<Value>),
-    Record(HashMap<String, Value>),
+    Record(FxHashMap<String, Value>),
     Closure(Closure),
     NativeFunction(fn(Vec<Value>, Range) -> IResult),
     Any,
     Nil,
 }
 
-impl fmt::Display for Value {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+impl std::fmt::Display for Value {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Value::String(value) => write!(f, "\"{}\"", value),
             Value::Number(value) => write!(f, "{}", value),
@@ -79,7 +80,7 @@ macro_rules! native_fn {
     ($name:literal; $self:ident: $fn:expr) => {
         $self
             .values
-            .insert($name.to_string(), Value::NativeFunction($fn));
+            .insert($name.to_string(), (Value::NativeFunction($fn), (0, 0)));
     };
 }
 
@@ -113,19 +114,19 @@ macro_rules! native_arg {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Environment {
-    values: HashMap<String, Value>,
-    value_ranges: HashMap<String, Range>,
+    values: FxHashMap<String, (Value, Range)>,
 }
 
 impl Environment {
     pub fn new() -> Self {
         Self {
-            values: HashMap::new(),
-            value_ranges: HashMap::new(),
+            values: FxHashMap::default(),
         }
     }
 
     pub fn load_stdlib(&mut self) {
+        native_fn!("gen"; self: Self::std_fn_gen);
+
         // Math functions
         native_fn!("add"; self: Self::std_fn_add);
         native_fn!("sub"; self: Self::std_fn_sub);
@@ -134,6 +135,7 @@ impl Environment {
         native_fn!("mod"; self: Self::std_fn_mod);
         native_fn!("rand"; self: Self::std_fn_rand);
         native_fn!("randf"; self: Self::std_fn_randf);
+        native_fn!("randl"; self: Self::std_fn_randl);
 
         // List functions
         native_fn!("len"; self: Self::std_fn_len);
@@ -144,17 +146,65 @@ impl Environment {
         native_fn!("tail"; self: Self::std_fn_tail);
     }
 
-    pub fn get(&self, name: &str) -> Option<&Value> {
+    pub fn get(&self, name: &str) -> Option<&(Value, Range)> {
         self.values.get(name)
     }
 
     pub fn set(&mut self, name: &str, value: Value, range: Range) {
-        self.values.insert(name.to_string(), value);
-        self.value_ranges.insert(name.to_string(), range);
+        self.values.insert(name.to_string(), (value, range));
     }
 
-    pub fn get_range(&self, name: &str) -> Option<&Range> {
-        self.value_ranges.get(name)
+    fn std_fn_gen(args: Vec<Value>, range: Range) -> IResult {
+        native_arg_count!("gen"; args == 2; range);
+
+        let prompt = native_arg!("gen"; args @ 0 => String @ range);
+        let options = native_arg!("gen"; args @ 1 => Record @ range);
+
+        let context = match options.get("ctx") {
+            Some(Value::String(value)) => Some(value.to_owned()),
+            _ => None,
+        };
+        let max_tokens = match options.get("max") {
+            Some(Value::Number(value)) => Some(*value as u32),
+            _ => None,
+        };
+        let temperature = match options.get("temp") {
+            Some(Value::Number(value)) => Some(*value as f32),
+            _ => None,
+        };
+        let stop = match options.get("stop") {
+            Some(Value::List(items)) => {
+                let mut result = Vec::new();
+
+                for item in items {
+                    match item {
+                        Value::String(value) => result.push(value.to_owned()),
+                        _ => {
+                            return Err(InterpreterError::NativeFunctionError(
+                                "gen: stop must be a list of strings".to_string(),
+                            ));
+                        }
+                    }
+                }
+
+                Some(result)
+            }
+            _ => None,
+        };
+
+        let config = LLMConfig {
+            llm_type: LLMType::OpenAI {
+                model: "gpt-3.5-turbo",
+                api_key: "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",
+                org: "org-uY7EIZO4VREcYPNAUzDKhoae",
+            },
+            ..Default::default()
+        };
+        let llm = LLM::new(config);
+
+        let result = llm.generate(prompt, context, max_tokens, temperature, stop);
+
+        Ok(Value::String(result))
     }
 
     // Stdlib: Math
@@ -233,6 +283,17 @@ impl Environment {
         let result = rng.gen_range(*min..*max);
 
         Ok(Value::Number(result))
+    }
+
+    fn std_fn_randl(args: Vec<Value>, range: Range) -> IResult {
+        native_arg_count!("randl"; args == 1; range);
+
+        let list = native_arg!("randl"; args @ 0 => List @ range);
+
+        let mut rng = rand::thread_rng();
+        let result = rng.gen_range(0..list.len());
+
+        Ok(list[result].to_owned())
     }
 
     // Stdlib: List
@@ -371,12 +432,18 @@ pub enum InterpreterError {
 type IResult = Result<Value, InterpreterError>;
 
 pub struct Interpreter {
+    fmt_re: Regex,
     fmt_range: Option<Range>,
 }
 
 impl Interpreter {
     pub fn new() -> Self {
-        Self { fmt_range: None }
+        let fmt_re = Regex::new(r#"\{([a-z_][a-zA-Z_]*)\}"#).unwrap();
+
+        Self {
+            fmt_re,
+            fmt_range: None,
+        }
     }
 
     pub fn display_error(&mut self, files: SimpleFiles<&str, &str>, error: InterpreterError) {
@@ -570,7 +637,7 @@ impl Interpreter {
 
     pub fn eval(&mut self, node: &AstNode, environment: &mut Environment) -> IResult {
         let result = match node {
-            AstNode::Prog { body, .. } => {
+            AstNode::Prog { body, .. } | AstNode::Block { body, .. } => {
                 let mut result = Value::Nil;
                 for node in body {
                     result = self.eval(node, environment)?;
@@ -578,13 +645,6 @@ impl Interpreter {
                 result
             }
             AstNode::ExprStmt { expr, .. } => self.eval(expr, environment)?,
-            AstNode::Block { body, .. } => {
-                let mut result = Value::Nil;
-                for node in body {
-                    result = self.eval(node, environment)?;
-                }
-                result
-            }
             AstNode::FuncDecl {
                 id: id_node,
                 is_const,
@@ -598,10 +658,10 @@ impl Interpreter {
                             if name == "_" {
                                 return Err(InterpreterError::InvalidFunctionName(id.range()));
                             } else {
-                                if environment.get(&name).is_some() {
+                                if let Some((_, range)) = environment.get(&name) {
                                     return Err(InterpreterError::Redeclaration(
                                         name.to_string(),
-                                        environment.get_range(&name).copied(),
+                                        Some(*range),
                                         id.range(),
                                     ));
                                 }
@@ -764,14 +824,15 @@ impl Interpreter {
 
                 let result = match **callee {
                     AstNode::Ident { ref name, range } => match environment.get(&name) {
-                        Some(Value::Closure(closure)) => {
+                        Some((Value::Closure(closure), _)) => {
                             // TODO: Should we handle recursion?
                             self.apply_closure(Some(callee.as_ref()), closure, args)?
                         }
-                        Some(Value::NativeFunction(method)) => {
-                            self.apply_native(method, args, range)?
+                        Some((Value::NativeFunction(method), _)) => {
+                            // self.apply_native(method, args, range)?
+                            method(args, range)?
                         }
-                        Some(value) => {
+                        Some((value, _)) => {
                             if args.len() != 0 {
                                 return Err(InterpreterError::NotCallable(
                                     *callee.to_owned(),
@@ -865,13 +926,14 @@ impl Interpreter {
                 }
 
                 match environment.get(&name) {
-                    Some(Value::Closure(closure)) => {
+                    Some((Value::Closure(closure), _)) => {
                         self.apply_closure(Some(&node), closure, vec![])?
                     }
-                    Some(Value::NativeFunction(method)) => {
-                        self.apply_native(method, vec![], *range)?
+                    Some((Value::NativeFunction(method), _)) => {
+                        // self.apply_native(method, vec![], *range)?
+                        method(vec![], *range)?
                     }
-                    Some(value) => value.to_owned(),
+                    Some((value, _)) => value.to_owned(),
                     None => {
                         return Err(InterpreterError::UndefinedVariable(
                             name.to_string(),
@@ -903,7 +965,7 @@ impl Interpreter {
                 Value::List(result)
             }
             AstNode::Record { keys, values, .. } => {
-                let mut record = HashMap::new();
+                let mut record = FxHashMap::default();
 
                 for (key, value) in keys.iter().zip(values.iter()) {
                     let key = match key {
@@ -996,63 +1058,54 @@ impl Interpreter {
         self.eval(&closure.body, &mut env)
     }
 
-    fn apply_native(
-        &mut self,
-        method: &fn(Vec<Value>, Range) -> IResult,
-        args: Vec<Value>,
-        range: Range,
-    ) -> IResult {
-        method(args, range)
-    }
-
     fn eval_fmt_string(
         &mut self,
         value: &String,
         range: Range,
         environment: &mut Environment,
     ) -> IResult {
+        let mut swaps = Vec::new();
+
+        for capture in self.fmt_re.captures_iter(value) {
+            let name = capture.get(1).unwrap().as_str().to_owned();
+
+            let full_match = capture.get(0).unwrap();
+            let range = (full_match.start(), full_match.end());
+
+            swaps.push((name, range));
+        }
+
         let mut result = String::new();
-        let mut chars = value.chars().peekable();
+        let mut chars = value.chars().peekable().enumerate();
 
-        let mut is_inside = false;
-        let mut buffer = String::new();
+        for (name, (start, end)) in swaps {
+            while let Some((i, c)) = chars.next() {
+                if i == start {
+                    let name = AstNode::Ident {
+                        name: name.to_owned(),
+                        range,
+                    };
+                    let value = self.eval(&name, environment)?;
+                    let value = match value {
+                        Value::String(value) => value,
+                        value => value.to_string(),
+                    };
 
-        while let Some(c) = chars.next() {
-            if c == '{' {
-                is_inside = true;
-                continue;
+                    result.push_str(&value);
+                    continue;
+                }
+
+                if i == end - 1 {
+                    break;
+                } else if i > start {
+                    continue;
+                }
+
+                result.push(c);
             }
+        }
 
-            if c == '}' {
-                is_inside = false;
-
-                let mut lexer = Lexer::new(&buffer);
-                lexer.lex().expect("fmt: lexer error");
-
-                let mut parser = Parser::new(lexer);
-                let ast = parser.parse().expect("fmt: parser error");
-
-                self.fmt_range = Some(range);
-
-                let value = self.eval(&ast, environment)?;
-                let value = match value {
-                    Value::String(value) => value,
-                    _ => value.to_string(),
-                };
-
-                self.fmt_range = None;
-
-                result.push_str(&value);
-
-                buffer.clear();
-                continue;
-            }
-
-            if is_inside {
-                buffer.push(c);
-                continue;
-            }
-
+        while let Some((_, c)) = chars.next() {
             result.push(c);
         }
 

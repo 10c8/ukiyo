@@ -7,8 +7,6 @@ use codespan_reporting::{
 
 use crate::lexer::*;
 
-const UNDERLINE: &str = "_";
-
 type Range = (usize, usize);
 
 #[derive(Debug, Clone, PartialEq)]
@@ -59,6 +57,11 @@ pub enum AstNode {
         expr: Box<AstNode>,
         range: Range,
     },
+    // TODO: Refactor case patterns to allow for captures
+    // CasePatternCapture {
+    //     name: String,
+    //     range: Range,
+    // },
     FuncCall {
         callee: Box<AstNode>,
         args: Vec<AstNode>,
@@ -121,6 +124,7 @@ impl AstNode {
             | AstNode::Case { range, .. }
             | AstNode::CaseBranch { range, .. }
             | AstNode::CasePattern { range, .. }
+            // | AstNode::CasePatternCapture { range, .. }
             | AstNode::FuncCall { range, .. }
             | AstNode::IterationOp { range, .. }
             | AstNode::Ident { range, .. }
@@ -505,14 +509,12 @@ impl Parser {
         }
     }
 
-    fn ignore_nl(&mut self) -> Result<(), ParseError> {
-        many!(0.., self: Token::Newline { .. })?;
-        Ok(())
+    fn ignore_nl(&mut self) -> Result<Vec<Token>, ParseError> {
+        many!(0.., self: Token::Newline { .. })
     }
 
-    fn ignore_nl_and_ws(&mut self) -> Result<(), ParseError> {
-        many!(0.., self: Token::Newline { .. } | Token::Indent { .. } | Token::Dedent { .. })?;
-        Ok(())
+    fn ignore_nl_and_ws(&mut self) -> Result<Vec<Token>, ParseError> {
+        many!(0.., self: Token::Newline { .. } | Token::Indent { .. } | Token::Dedent { .. })
     }
 
     fn parse_indent(&mut self) -> Result<(), ParseError> {
@@ -787,18 +789,13 @@ impl Parser {
         if let Some(first) = first {
             match first {
                 Token::Identifier { name, .. } => {
-                    if name == UNDERLINE {
-                        let range = self.lexer.next().span().range;
+                    let range = self.lexer.next().span().range;
 
-                        return Ok(AstNode::CasePattern {
-                            kind: CasePatternKind::Any,
-                            expr: Box::new(AstNode::Ident {
-                                name: String::from(UNDERLINE),
-                                range,
-                            }),
-                            range,
-                        });
-                    }
+                    return Ok(AstNode::CasePattern {
+                        kind: CasePatternKind::Any,
+                        expr: Box::new(AstNode::Ident { name, range }),
+                        range,
+                    });
                 }
                 _ => unreachable!(),
             }

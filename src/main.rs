@@ -1,5 +1,6 @@
 mod interpreter;
 mod lexer;
+mod llm;
 mod parser;
 mod scanner;
 
@@ -50,7 +51,7 @@ fn main() {
     */
 
     let example = r#"
-const fizzbuzz -> 0..<10 |x|
+const fizzbuzz -> 0..<1000000 |x|
   case [(mod x 3), (mod x 5)] of
     [0, 0] => "FizzBuzz"
     [0, _] => "Fizz"
@@ -119,5 +120,5 @@ join fizzbuzz "\n"
 
     println!("Interpreter took: {:?}", Instant::now() - start);
 
-    println!("\n{}", result.unwrap());
+    // println!("\n{}", result.unwrap());
 }
