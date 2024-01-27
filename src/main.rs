@@ -21,65 +21,32 @@ use crate::{
 };
 
 fn main() {
-    /*
-        let example = r#"
-    fruits -> ["apples", "bananas", "oranges", "limes"]
-    flavors -> {
-        "fruit"     = ["sweet", "sour", "bitter"],
-        "vegetable" = ["bitter", "salty", "umami"],
-        "meat"      = ["salty", "umami", "sweet"],
-    }
-
-    get_color fruit ->
-        color -> case fruit of
-            "apples"            => "red"
-            "bananas" | "limes" => "yellow"
-            "oranges"           => "orange"
-            _                   => gen %% { "ctx" = ["give me the fruit color"], "temp" = 0.3 }
-
-        $"{fruit} are {color}"
-
-    fruit_colors ->
-        case (len fruits) of
-            1 => get_color (head fruits)
-            _ =>
-                start -> join ((init fruits) |f| get_color f) ", "
-                end   -> get_color (last fruits)
-
-                $"{start} and {end}"
-    "#;
-    */
-
-    let example = r#"
-const fizzbuzz -> 0..<1000000 |x|
-  case [(mod x 3), (mod x 5)] of
-    [0, 0] => "FizzBuzz"
-    [0, _] => "Fizz"
-    [_, 0] => "Buzz"
-    _      => x
-
-join fizzbuzz "\n"
-"#;
+    let source = std::fs::read_to_string("./examples/test.tail").unwrap();
 
     let mut files = SimpleFiles::new();
-    files.add("src", example);
+    files.add("src", &source);
 
     let writer = StandardStream::stderr(ColorChoice::Auto);
     let config = term::Config::default();
 
     let start = Instant::now();
 
-    let mut lexer = Lexer::new(example);
+    let mut lexer = Lexer::new(&source);
     if let Err(err) = lexer.lex() {
         let diagnostic = err.to_diagnostic(&files);
         term::emit(&mut writer.lock(), &config, &files, &diagnostic).unwrap();
         return;
     }
 
-    println!("Lexer took: {:?}", Instant::now() - start);
+    println!("Lexer took:\t\t{:?}", Instant::now() - start);
 
     // let mut lexer_copy = lexer.clone();
 
+    let mem_before = if let Some(stats) = memory_stats::memory_stats() {
+        stats.physical_mem + stats.virtual_mem
+    } else {
+        0
+    };
     let start = Instant::now();
 
     let mut parser = Parser::new(lexer);
@@ -101,11 +68,27 @@ join fizzbuzz "\n"
 
     let ast = result.unwrap();
 
-    println!("Parser took: {:?}", Instant::now() - start);
+    let end = Instant::now();
+    let mem_after = if let Some(stats) = memory_stats::memory_stats() {
+        stats.physical_mem + stats.virtual_mem
+    } else {
+        0
+    };
+
+    println!(
+        "Parser took:\t\t{:?} ({} bytes)",
+        end - start,
+        mem_after - mem_before
+    );
 
     // println!("\n--- AST:");
     // println!("{:#?}", ast);
 
+    let mem_before = if let Some(stats) = memory_stats::memory_stats() {
+        stats.physical_mem + stats.virtual_mem
+    } else {
+        0
+    };
     let start = Instant::now();
 
     let mut environment = Environment::new();
@@ -118,7 +101,20 @@ join fizzbuzz "\n"
         return;
     }
 
-    println!("Interpreter took: {:?}", Instant::now() - start);
+    let end = Instant::now();
+    let mem_after = if let Some(stats) = memory_stats::memory_stats() {
+        stats.physical_mem + stats.virtual_mem
+    } else {
+        0
+    };
 
-    // println!("\n{}", result.unwrap());
+    println!(
+        "Interpreter took:\t{:?} ({} mb)",
+        end - start,
+        (mem_after - mem_before) / 1_000_000
+    );
+
+    println!("Total memory used:\t{} mb", mem_after / 1_000_000);
+
+    println!("\n{}", result.unwrap());
 }

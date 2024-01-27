@@ -2,6 +2,7 @@ use codespan_reporting::{
     diagnostic::{Diagnostic, Label},
     files::SimpleFiles,
 };
+use ecow::EcoString;
 
 use crate::scanner::*;
 
@@ -31,7 +32,7 @@ pub enum RangeMode {
 pub enum Token {
     Identifier {
         // [a-zA-Z_][a-zA-Z0-9_]*
-        name: String,
+        name: EcoString,
         span: Span,
     },
     Keyword {
@@ -41,12 +42,12 @@ pub enum Token {
     },
     String {
         // "[^"]*"
-        value: String,
+        value: EcoString,
         span: Span,
     },
     Regex {
         // /[^/]+/
-        value: String,
+        value: EcoString,
         is_case_insensitive: bool,
         is_global: bool,
         is_multiline: bool,
@@ -151,11 +152,11 @@ pub enum LexError {
 }
 
 pub trait ToDiagnostic {
-    fn to_diagnostic(&self, files: &SimpleFiles<&str, &str>) -> Diagnostic<usize>;
+    fn to_diagnostic(&self, files: &SimpleFiles<&str, &String>) -> Diagnostic<usize>;
 }
 
 impl ToDiagnostic for LexError {
-    fn to_diagnostic(&self, _files: &SimpleFiles<&str, &str>) -> Diagnostic<usize> {
+    fn to_diagnostic(&self, _files: &SimpleFiles<&str, &String>) -> Diagnostic<usize> {
         match self {
             LexError::UnexpectedChar(expected, cursor) => {
                 let article = match expected.chars().next().unwrap() {
@@ -341,7 +342,7 @@ impl Lexer {
                             span,
                         },
                         _ => Token::Identifier {
-                            name: identifier,
+                            name: identifier.into(),
                             span,
                         },
                     };
@@ -423,7 +424,7 @@ impl Lexer {
                     };
 
                     tokens.push(Token::String {
-                        value: string,
+                        value: string.into(),
                         span,
                     });
                 }
@@ -505,7 +506,7 @@ impl Lexer {
                         };
 
                         tokens.push(Token::String {
-                            value: string,
+                            value: string.into(),
                             span,
                         });
                     } else {
@@ -603,7 +604,7 @@ impl Lexer {
                     };
 
                     tokens.push(Token::Regex {
-                        value: regex,
+                        value: regex.into(),
                         is_case_insensitive,
                         is_global,
                         is_multiline,
@@ -739,7 +740,7 @@ impl Lexer {
 
                     if self.scanner.try_consume('%') {
                         tokens.push(Token::Identifier {
-                            name: "%%".to_string(),
+                            name: "%%".into(),
                             span: Span {
                                 line,
                                 column,
@@ -838,7 +839,7 @@ test -> "test" # this is an inline comment
         assert_eq!(
             lexer.next(),
             Token::Identifier {
-                name: "test".to_string(),
+                name: "test".into(),
                 span: Span {
                     line: 2,
                     column: 1,
@@ -859,7 +860,7 @@ test -> "test" # this is an inline comment
         assert_eq!(
             lexer.next(),
             Token::String {
-                value: "test".to_string(),
+                value: "test".into(),
                 span: Span {
                     line: 2,
                     column: 9,
@@ -878,7 +879,7 @@ test -> "test" # this is an inline comment
         assert_eq!(
             lexer.next(),
             Token::Identifier {
-                name: "hello_World23".to_string(),
+                name: "hello_World23".into(),
                 span: Span {
                     line: 1,
                     column: 1,
@@ -916,7 +917,7 @@ test -> "test" # this is an inline comment
         assert_eq!(
             lexer.next(),
             Token::String {
-                value: "hello world\n".to_string(),
+                value: "hello world\n".into(),
                 span: Span {
                     line: 1,
                     column: 1,
@@ -935,7 +936,7 @@ test -> "test" # this is an inline comment
         assert_eq!(
             lexer.next(),
             Token::String {
-                value: "hello \"world\"\n".to_string(),
+                value: "hello \"world\"\n".into(),
                 span: Span {
                     line: 1,
                     column: 1,
@@ -971,7 +972,7 @@ test -> "test" # this is an inline comment
         assert_eq!(
             lexer.next(),
             Token::String {
-                value: "hello \"world\"\nthis is cool!".to_string(),
+                value: "hello \"world\"\nthis is cool!".into(),
                 span: Span {
                     line: 2,
                     column: 3,
@@ -990,7 +991,7 @@ test -> "test" # this is an inline comment
         assert_eq!(
             lexer.next(),
             Token::Regex {
-                value: "[a-zA-Z]+".to_string(),
+                value: "[a-zA-Z]+".into(),
                 is_case_insensitive: true,
                 is_global: true,
                 is_multiline: true,
@@ -1299,7 +1300,7 @@ test -> "test" # this is an inline comment
         assert_eq!(
             lexer.next(),
             Token::Identifier {
-                name: "test".to_string(),
+                name: "test".into(),
                 span: Span {
                     line: 2,
                     column: 1,
@@ -1320,7 +1321,7 @@ test -> "test" # this is an inline comment
         assert_eq!(
             lexer.next(),
             Token::Identifier {
-                name: "test".to_string(),
+                name: "test".into(),
                 span: Span {
                     line: 5,
                     column: 1,

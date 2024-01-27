@@ -4,6 +4,7 @@ use codespan_reporting::{
     term::termcolor::{ColorChoice, StandardStream},
     term::{self, Config},
 };
+use ecow::{EcoString, EcoVec};
 
 use crate::lexer::*;
 
@@ -19,7 +20,7 @@ pub enum CasePatternKind {
 #[derive(Debug, Clone, PartialEq)]
 pub enum AstNode {
     Prog {
-        body: Vec<AstNode>,
+        body: EcoVec<AstNode>,
         range: Range,
     },
     ExprStmt {
@@ -27,24 +28,24 @@ pub enum AstNode {
         range: Range,
     },
     Block {
-        body: Vec<AstNode>,
+        body: EcoVec<AstNode>,
         range: Range,
     },
     FuncDecl {
         id: Option<Box<AstNode>>,
         is_const: bool,
-        params: Vec<AstNode>,
+        params: EcoVec<AstNode>,
         body: Box<AstNode>,
         range: Range,
     },
     Lambda {
-        params: Vec<AstNode>,
+        params: EcoVec<AstNode>,
         body: Box<AstNode>,
         range: Range,
     },
     Case {
         expr: Box<AstNode>,
-        cases: Vec<AstNode>,
+        cases: EcoVec<AstNode>,
         range: Range,
     },
     CaseBranch {
@@ -64,7 +65,7 @@ pub enum AstNode {
     // },
     FuncCall {
         callee: Box<AstNode>,
-        args: Vec<AstNode>,
+        args: EcoVec<AstNode>,
         range: Range,
     },
     IterationOp {
@@ -74,16 +75,16 @@ pub enum AstNode {
         range: Range,
     },
     Ident {
-        name: String,
+        name: EcoString,
         range: Range,
     },
     StrLit {
-        value: String,
+        value: EcoString,
         is_format: bool,
         range: Range,
     },
     Regex {
-        value: String,
+        value: EcoString,
         is_case_insensitive: bool,
         is_global: bool,
         is_multiline: bool,
@@ -97,12 +98,12 @@ pub enum AstNode {
         range: Range,
     },
     List {
-        items: Vec<AstNode>,
+        items: EcoVec<AstNode>,
         range: Range,
     },
     Record {
-        keys: Vec<AstNode>,
-        values: Vec<AstNode>,
+        keys: EcoVec<AstNode>,
+        values: EcoVec<AstNode>,
         range: Range,
     },
     Range {
@@ -384,7 +385,7 @@ impl Parser {
         Ok(program)
     }
 
-    pub fn display_error(&mut self, files: SimpleFiles<&str, &str>, error: ParseError) {
+    pub fn display_error(&mut self, files: SimpleFiles<&str, &String>, error: ParseError) {
         let tok;
         let span;
         let err;
@@ -572,7 +573,10 @@ impl Parser {
 
         let range = (0, body.last().map(|stmt| stmt.range().1).unwrap_or(0));
 
-        Ok(AstNode::Prog { body, range })
+        Ok(AstNode::Prog {
+            body: body.into(),
+            range,
+        })
     }
 
     fn parse_stmt(&mut self) -> PResult {
@@ -600,7 +604,7 @@ impl Parser {
     fn parse_block(&mut self) -> PResult {
         self.parse_indent()?;
 
-        let mut body = Vec::new();
+        let mut body = EcoVec::new();
 
         loop {
             body.push(cut!(self: parse_stmt)?);
@@ -704,12 +708,12 @@ impl Parser {
             Some(id) => AstNode::FuncDecl {
                 id: Some(Box::new(id)),
                 is_const: const_marker.is_some(),
-                params,
+                params: params.into(),
                 body: Box::new(body),
                 range,
             },
             None => AstNode::Lambda {
-                params,
+                params: params.into(),
                 body: Box::new(body),
                 range,
             },
@@ -736,7 +740,7 @@ impl Parser {
 
         Ok(AstNode::Case {
             expr: Box::new(expr),
-            cases,
+            cases: cases.into(),
             range,
         })
     }
@@ -808,7 +812,7 @@ impl Parser {
 
             let range = (first.range().0, rest.last().unwrap().range().1);
 
-            let mut items = Vec::new();
+            let mut items = EcoVec::new();
             items.push(first);
             items.extend(rest);
 
@@ -903,7 +907,7 @@ impl Parser {
 
         Ok(AstNode::FuncCall {
             callee: Box::new(id),
-            args,
+            args: args.into(),
             range,
         })
     }
@@ -993,7 +997,7 @@ impl Parser {
         })
     }
 
-    fn parse_string_part(&mut self) -> Result<(String, Span), ParseError> {
+    fn parse_string_part(&mut self) -> Result<(EcoString, Span), ParseError> {
         map!(self: Token::String { value, span }, "string" => (value, span))
     }
 
@@ -1051,7 +1055,7 @@ impl Parser {
         let end = self.parse_list_end()?;
 
         Ok(AstNode::List {
-            items,
+            items: items.into(),
             range: (start.span().range.0, end.span().range.1),
         })
     }
@@ -1102,8 +1106,8 @@ impl Parser {
         let end = self.parse_record_end()?;
 
         Ok(AstNode::Record {
-            keys,
-            values,
+            keys: keys.into(),
+            values: values.into(),
             range: (start.span().range.0, end.span().range.1),
         })
     }
@@ -1125,7 +1129,7 @@ impl Parser {
         loop {
             let key = cut!(self: parse_string)?;
 
-            let eq = token!("`=`"; self: Token::Symbol { value: '=', .. });
+            let eq = token!("`:`"; self: Token::Symbol { value: ':', .. });
             self.cut(eq)?;
 
             let value = cut!(self: parse_expr)?;

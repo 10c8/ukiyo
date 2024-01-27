@@ -1,3 +1,5 @@
+use std::{borrow::Borrow, rc::Rc};
+
 use codespan_reporting::{
     diagnostic::{Diagnostic, Label},
     files::SimpleFiles,
@@ -7,6 +9,7 @@ use codespan_reporting::{
         Config,
     },
 };
+use ecow::EcoString;
 use rand::Rng;
 use regex::Regex;
 use rustc_hash::FxHashMap;
@@ -17,16 +20,24 @@ use crate::{
     parser::{AstNode, CasePatternKind},
 };
 
+static UNDERLINE: &str = "_";
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum Value {
-    String(String),
+    String(EcoString),
     Number(f64),
-    List(Vec<Value>),
-    Record(FxHashMap<String, Value>),
+    List(Rc<[Rc<Value>]>),
+    Record(FxHashMap<EcoString, Rc<Value>>),
     Closure(Closure),
-    NativeFunction(fn(Vec<Value>, Range) -> IResult),
+    NativeFunction(fn(Vec<Rc<Value>>, Range) -> IResult),
     Any,
     Nil,
+}
+
+impl Default for Value {
+    fn default() -> Self {
+        Self::Nil
+    }
 }
 
 impl std::fmt::Display for Value {
@@ -62,7 +73,7 @@ impl std::fmt::Display for Value {
     }
 }
 
-fn typeof_value(value: &Value) -> String {
+fn typeof_value(value: &Value) -> &'static str {
     match value {
         Value::String(_) => "string",
         Value::Number(_) => "number",
@@ -73,14 +84,13 @@ fn typeof_value(value: &Value) -> String {
         Value::Any => "any",
         Value::Nil => "nil",
     }
-    .to_string()
 }
 
 macro_rules! native_fn {
     ($name:literal; $self:ident: $fn:expr) => {
         $self
             .values
-            .insert($name.to_string(), (Value::NativeFunction($fn), (0, 0)));
+            .insert($name.into(), (Rc::new(Value::NativeFunction($fn)), (0, 0)));
     };
 }
 
@@ -98,23 +108,32 @@ macro_rules! native_arg_count {
 
 macro_rules! native_arg {
     ($name:literal; $args:ident@$index:expr => $type:ident @ $range:expr) => {
-        match $args.get($index) {
-            Some(Value::$type(value)) => value,
-            _ => {
-                return Err(InterpreterError::NativeFunctionInvalidArgument(
-                    $range,
-                    $index,
-                    stringify!($type).to_lowercase(),
-                    typeof_value($args.get($index).unwrap()),
-                ))
+        if let Some(value) = $args.get($index) {
+            match value.borrow() {
+                Value::$type(value) => value,
+                _ => {
+                    return Err(InterpreterError::NativeFunctionInvalidArgument(
+                        $range,
+                        $index,
+                        stringify!($type).to_lowercase(),
+                        typeof_value($args.get($index).unwrap()),
+                    ))
+                }
             }
+        } else {
+            return Err(InterpreterError::NativeFunctionInvalidArgument(
+                $range,
+                $index,
+                stringify!($type).to_lowercase(),
+                typeof_value($args.get($index).unwrap()),
+            ));
         }
     };
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Environment {
-    values: FxHashMap<String, (Value, Range)>,
+    values: FxHashMap<EcoString, (Rc<Value>, Range)>,
 }
 
 impl Environment {
@@ -125,6 +144,10 @@ impl Environment {
     }
 
     pub fn load_stdlib(&mut self) {
+        // Debug functions
+        native_fn!("trace"; self: Self::std_fn_trace);
+
+        // LLM functions
         native_fn!("gen"; self: Self::std_fn_gen);
 
         // Math functions
@@ -146,57 +169,86 @@ impl Environment {
         native_fn!("tail"; self: Self::std_fn_tail);
     }
 
-    pub fn get(&self, name: &str) -> Option<&(Value, Range)> {
+    pub fn get(&self, name: &str) -> Option<&(Rc<Value>, Range)> {
         self.values.get(name)
     }
 
-    pub fn set(&mut self, name: &str, value: Value, range: Range) {
-        self.values.insert(name.to_string(), (value, range));
+    pub fn set(&mut self, name: &str, value: Rc<Value>, range: Range) {
+        self.values.insert(name.into(), (value, range));
     }
 
-    fn std_fn_gen(args: Vec<Value>, range: Range) -> IResult {
+    fn std_fn_trace(args: Vec<Rc<Value>>, range: Range) -> IResult {
+        native_arg_count!("trace"; args == 1; range);
+
+        let value = native_arg!("trace"; args @ 0 => String @ range);
+
+        println!("[trace] {}", value);
+
+        Ok(Value::Nil.into())
+    }
+
+    fn std_fn_gen(args: Vec<Rc<Value>>, range: Range) -> IResult {
         native_arg_count!("gen"; args == 2; range);
 
         let prompt = native_arg!("gen"; args @ 0 => String @ range);
         let options = native_arg!("gen"; args @ 1 => Record @ range);
 
-        let context = match options.get("ctx") {
-            Some(Value::String(value)) => Some(value.to_owned()),
-            _ => None,
+        let context = if let Some(context) = options.get("ctx") {
+            match context.borrow() {
+                Value::String(value) => Some(value.clone()),
+                _ => None,
+            }
+        } else {
+            None
         };
-        let max_tokens = match options.get("max") {
-            Some(Value::Number(value)) => Some(*value as u32),
-            _ => None,
-        };
-        let temperature = match options.get("temp") {
-            Some(Value::Number(value)) => Some(*value as f32),
-            _ => None,
-        };
-        let stop = match options.get("stop") {
-            Some(Value::List(items)) => {
-                let mut result = Vec::new();
 
-                for item in items {
-                    match item {
-                        Value::String(value) => result.push(value.to_owned()),
-                        _ => {
-                            return Err(InterpreterError::NativeFunctionError(
-                                "gen: stop must be a list of strings".to_string(),
-                            ));
+        let max_tokens = if let Some(max_tokens) = options.get("max") {
+            match max_tokens.borrow() {
+                Value::Number(value) => Some(*value as usize),
+                _ => None,
+            }
+        } else {
+            None
+        };
+
+        let temperature = if let Some(temperature) = options.get("temp") {
+            match temperature.borrow() {
+                Value::Number(value) => Some(*value as f32),
+                _ => None,
+            }
+        } else {
+            None
+        };
+
+        let stop = if let Some(stop) = options.get("stop") {
+            match stop.borrow() {
+                Value::List(items) => {
+                    let mut result = Vec::new();
+
+                    for item in items.iter() {
+                        match item.borrow() {
+                            Value::String(value) => result.push(value.clone()),
+                            _ => {
+                                return Err(InterpreterError::NativeFunctionError(
+                                    "gen: stop must be a list of strings",
+                                ));
+                            }
                         }
                     }
-                }
 
-                Some(result)
+                    Some(result)
+                }
+                _ => None,
             }
-            _ => None,
+        } else {
+            None
         };
 
         let config = LLMConfig {
             llm_type: LLMType::OpenAI {
                 model: "gpt-3.5-turbo",
-                api_key: "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",
-                org: "org-uY7EIZO4VREcYPNAUzDKhoae",
+                api_key: "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",
+                org: "org-UJZWWVz1mXpuSYKHYnchbjHq",
             },
             ..Default::default()
         };
@@ -204,11 +256,11 @@ impl Environment {
 
         let result = llm.generate(prompt, context, max_tokens, temperature, stop);
 
-        Ok(Value::String(result))
+        Ok(Value::String(result.into()).into())
     }
 
     // Stdlib: Math
-    fn std_fn_add(args: Vec<Value>, range: Range) -> IResult {
+    fn std_fn_add(args: Vec<Rc<Value>>, range: Range) -> IResult {
         native_arg_count!("add"; args == 2; range);
 
         let a = native_arg!("add"; args @ 0 => Number @ range);
@@ -216,10 +268,10 @@ impl Environment {
 
         let result = a + b;
 
-        Ok(Value::Number((result as i64) as f64))
+        Ok(Value::Number((result as i64) as f64).into())
     }
 
-    fn std_fn_sub(args: Vec<Value>, range: Range) -> IResult {
+    fn std_fn_sub(args: Vec<Rc<Value>>, range: Range) -> IResult {
         native_arg_count!("sub"; args == 2; range);
 
         let a = native_arg!("sub"; args @ 0 => Number @ range);
@@ -227,10 +279,10 @@ impl Environment {
 
         let result = a - b;
 
-        Ok(Value::Number((result as i64) as f64))
+        Ok(Value::Number((result as i64) as f64).into())
     }
 
-    fn std_fn_mul(args: Vec<Value>, range: Range) -> IResult {
+    fn std_fn_mul(args: Vec<Rc<Value>>, range: Range) -> IResult {
         native_arg_count!("mul"; args == 2; range);
 
         let a = native_arg!("mul"; args @ 0 => Number @ range);
@@ -238,10 +290,10 @@ impl Environment {
 
         let result = a * b;
 
-        Ok(Value::Number((result as i64) as f64))
+        Ok(Value::Number((result as i64) as f64).into())
     }
 
-    fn std_fn_div(args: Vec<Value>, range: Range) -> IResult {
+    fn std_fn_div(args: Vec<Rc<Value>>, range: Range) -> IResult {
         native_arg_count!("div"; args == 2; range);
 
         let a = native_arg!("div"; args @ 0 => Number @ range);
@@ -249,19 +301,19 @@ impl Environment {
 
         let result = a / b;
 
-        Ok(Value::Number((result as i64) as f64))
+        Ok(Value::Number((result as i64) as f64).into())
     }
 
-    fn std_fn_mod(args: Vec<Value>, range: Range) -> IResult {
+    fn std_fn_mod(args: Vec<Rc<Value>>, range: Range) -> IResult {
         native_arg_count!("mod"; args == 2; range);
 
         let a = native_arg!("mod"; args @ 0 => Number @ range);
         let b = native_arg!("mod"; args @ 1 => Number @ range);
 
-        Ok(Value::Number(a % b))
+        Ok(Value::Number(a % b).into())
     }
 
-    fn std_fn_rand(args: Vec<Value>, range: Range) -> IResult {
+    fn std_fn_rand(args: Vec<Rc<Value>>, range: Range) -> IResult {
         native_arg_count!("rand"; args == 2; range);
 
         let min = native_arg!("rand"; args @ 0 => Number @ range);
@@ -270,10 +322,10 @@ impl Environment {
         let mut rng = rand::thread_rng();
         let result = rng.gen_range(*min..*max) as i64;
 
-        Ok(Value::Number(result as f64))
+        Ok(Value::Number(result as f64).into())
     }
 
-    fn std_fn_randf(args: Vec<Value>, range: Range) -> IResult {
+    fn std_fn_randf(args: Vec<Rc<Value>>, range: Range) -> IResult {
         native_arg_count!("randf"; args == 2; range);
 
         let min = native_arg!("randf"; args @ 0 => Number @ range);
@@ -282,10 +334,10 @@ impl Environment {
         let mut rng = rand::thread_rng();
         let result = rng.gen_range(*min..*max);
 
-        Ok(Value::Number(result))
+        Ok(Value::Number(result).into())
     }
 
-    fn std_fn_randl(args: Vec<Value>, range: Range) -> IResult {
+    fn std_fn_randl(args: Vec<Rc<Value>>, range: Range) -> IResult {
         native_arg_count!("randl"; args == 1; range);
 
         let list = native_arg!("randl"; args @ 0 => List @ range);
@@ -293,120 +345,108 @@ impl Environment {
         let mut rng = rand::thread_rng();
         let result = rng.gen_range(0..list.len());
 
-        Ok(list[result].to_owned())
+        Ok(list[result].clone())
     }
 
     // Stdlib: List
-    fn std_fn_len(args: Vec<Value>, range: Range) -> IResult {
+    fn std_fn_len(args: Vec<Rc<Value>>, range: Range) -> IResult {
         native_arg_count!("len"; args == 1; range);
 
         let value = args.get(0).unwrap();
 
-        let result = match value {
+        let result = match value.borrow() {
             Value::String(value) => value.len(),
             Value::List(value) => value.len(),
             Value::Record(value) => value.len(),
             _ => Err(InterpreterError::TypeMismatch(
                 range,
-                "string, list or record".to_string(),
+                "string, list or record",
                 typeof_value(value),
             ))?,
         };
 
-        Ok(Value::Number(result as f64))
+        Ok(Value::Number(result as f64).into())
     }
 
-    fn std_fn_join(args: Vec<Value>, range: Range) -> IResult {
+    fn std_fn_join(args: Vec<Rc<Value>>, range: Range) -> IResult {
         native_arg_count!("join"; args == 2; range);
 
         let list = native_arg!("join"; args @ 0 => List @ range);
         let separator = native_arg!("join"; args @ 1 => String @ range);
 
-        let mut result = String::new();
+        let mut result = EcoString::new();
         for (i, item) in list.iter().enumerate() {
             if i != 0 {
                 result.push_str(separator);
             }
 
-            match item {
+            match item.borrow() {
                 Value::String(value) => result.push_str(value),
                 _ => result.push_str(&item.to_string()),
             };
         }
 
-        Ok(Value::String(result))
+        Ok(Value::String(result.into()).into())
     }
 
-    fn std_fn_init(args: Vec<Value>, range: Range) -> IResult {
+    fn std_fn_init(args: Vec<Rc<Value>>, range: Range) -> IResult {
         native_arg_count!("init"; args == 1; range);
 
         let mut list = native_arg!("init"; args @ 0 => List @ range).to_owned();
 
         if list.len() == 0 {
-            return Err(InterpreterError::NativeFunctionError(
-                "init: list is empty".to_string(),
-            ));
+            return Err(InterpreterError::NativeFunctionError("init: list is empty"));
         }
 
-        list.pop();
+        list = list[0..list.len() - 1].to_vec().into();
 
-        Ok(Value::List(list))
+        Ok(Value::List(list).into())
     }
 
-    fn std_fn_last(args: Vec<Value>, range: Range) -> IResult {
+    fn std_fn_last(args: Vec<Rc<Value>>, range: Range) -> IResult {
         native_arg_count!("last"; args == 1; range);
 
         let list = native_arg!("last"; args @ 0 => List @ range);
 
         let last = match list.last() {
             Some(last) => last,
-            None => {
-                return Err(InterpreterError::NativeFunctionError(
-                    "last: list is empty".to_string(),
-                ))
-            }
+            None => return Err(InterpreterError::NativeFunctionError("last: list is empty")),
         };
 
-        Ok(last.to_owned())
+        Ok(last.clone())
     }
 
-    fn std_fn_head(args: Vec<Value>, range: Range) -> IResult {
+    fn std_fn_head(args: Vec<Rc<Value>>, range: Range) -> IResult {
         native_arg_count!("head"; args == 1; range);
 
         let list = native_arg!("head"; args @ 0 => List @ range);
 
         let head = match list.first() {
             Some(head) => head,
-            None => {
-                return Err(InterpreterError::NativeFunctionError(
-                    "head: list is empty".to_string(),
-                ))
-            }
+            None => return Err(InterpreterError::NativeFunctionError("head: list is empty")),
         };
 
-        Ok(head.to_owned())
+        Ok(head.clone())
     }
 
-    fn std_fn_tail(args: Vec<Value>, range: Range) -> IResult {
+    fn std_fn_tail(args: Vec<Rc<Value>>, range: Range) -> IResult {
         native_arg_count!("tail"; args == 1; range);
 
         let mut list = native_arg!("tail"; args @ 0 => List @ range).to_owned();
 
         if list.len() == 0 {
-            return Err(InterpreterError::NativeFunctionError(
-                "tail: list is empty".to_string(),
-            ));
+            return Err(InterpreterError::NativeFunctionError("tail: list is empty"));
         }
 
-        list.remove(0);
+        list = list[1..list.len()].to_vec().into();
 
-        Ok(Value::List(list))
+        Ok(Value::List(list).into())
     }
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Closure {
-    params: Vec<String>,
+    params: Vec<EcoString>,
     body: AstNode,
     env: Environment,
 }
@@ -415,38 +455,42 @@ type Range = (usize, usize);
 
 #[derive(Debug, Clone)]
 pub enum InterpreterError {
-    UndefinedVariable(String, Range),
+    UndefinedVariable(EcoString, Range),
     NotCallable(AstNode, Range),
-    NotIterable(Value, Range),
+    NotIterable(Rc<Value>, Range),
     WrongArgumentCount(Range, usize, usize),
-    TypeMismatch(Range, String, String),
-    PatternTypeMismatch(Range, String, String),
-    Redeclaration(String, Option<Range>, Range),
+    TypeMismatch(Range, &'static str, &'static str),
+    PatternTypeMismatch(Range, &'static str, &'static str),
+    Redeclaration(EcoString, Option<Range>, Range),
     InvalidFunctionName(Range),
     InvalidFunctionParam(Range),
-    NativeFunctionError(String),
+    NativeFunctionError(&'static str),
     NativeFunctionWrongArgumentCount(Range, usize, usize),
-    NativeFunctionInvalidArgument(Range, usize, String, String),
+    NativeFunctionInvalidArgument(Range, usize, String, &'static str),
 }
 
-type IResult = Result<Value, InterpreterError>;
+type IResult = Result<Rc<Value>, InterpreterError>;
 
 pub struct Interpreter {
+    any_value: Rc<Value>,
+    nil_value: Rc<Value>,
     fmt_re: Regex,
     fmt_range: Option<Range>,
 }
 
 impl Interpreter {
     pub fn new() -> Self {
-        let fmt_re = Regex::new(r#"\{([a-z_][a-zA-Z_]*)\}"#).unwrap();
+        let fmt_re = Regex::new(r#"\{([a-zA-Z_][a-zA-Z0-9_]*)\}"#).unwrap();
 
         Self {
+            any_value: Rc::new(Value::Any),
+            nil_value: Rc::new(Value::Nil),
             fmt_re,
             fmt_range: None,
         }
     }
 
-    pub fn display_error(&mut self, files: SimpleFiles<&str, &str>, error: InterpreterError) {
+    pub fn display_error(&mut self, files: SimpleFiles<&str, &String>, error: InterpreterError) {
         let writer = StandardStream::stderr(ColorChoice::Auto);
         let config = Config::default();
 
@@ -638,7 +682,7 @@ impl Interpreter {
     pub fn eval(&mut self, node: &AstNode, environment: &mut Environment) -> IResult {
         let result = match node {
             AstNode::Prog { body, .. } | AstNode::Block { body, .. } => {
-                let mut result = Value::Nil;
+                let mut result = self.nil_value.clone();
                 for node in body {
                     result = self.eval(node, environment)?;
                 }
@@ -653,20 +697,20 @@ impl Interpreter {
                 ..
             } => {
                 let id = match id_node {
-                    Some(id) => match id.as_ref() {
-                        AstNode::Ident { name, .. } => {
-                            if name == "_" {
+                    Some(id) => match id.borrow() {
+                        AstNode::Ident { ref name, .. } => {
+                            if *name == UNDERLINE {
                                 return Err(InterpreterError::InvalidFunctionName(id.range()));
                             } else {
-                                if let Some((_, range)) = environment.get(&name) {
+                                if let Some((_, range)) = environment.get(name) {
                                     return Err(InterpreterError::Redeclaration(
-                                        name.to_string(),
+                                        name.clone(),
                                         Some(*range),
                                         id.range(),
                                     ));
                                 }
 
-                                Some(name.to_owned())
+                                Some(name)
                             }
                         }
                         _ => unreachable!(),
@@ -677,11 +721,11 @@ impl Interpreter {
                 let mut params = Vec::new();
                 for param in fn_params {
                     match param {
-                        AstNode::Ident { name, .. } => {
-                            if name == "_" {
+                        AstNode::Ident { ref name, .. } => {
+                            if *name == UNDERLINE {
                                 return Err(InterpreterError::InvalidFunctionParam(param.range()));
                             } else {
-                                params.push(name.to_owned())
+                                params.push(name.clone())
                             }
                         }
                         _ => unreachable!(),
@@ -690,22 +734,23 @@ impl Interpreter {
 
                 let closure = Closure {
                     params,
-                    body: *body.to_owned(),
-                    env: environment.to_owned(),
+                    body: *body.clone(),
+                    env: environment.clone(),
                 };
 
                 let value = if *is_const {
                     // TODO: Make it lazy
-                    self.apply_closure(id_node.as_deref(), &closure, vec![])?
+                    let value = self.apply_closure(id_node.as_deref(), &closure, vec![])?;
+                    value.clone()
                 } else {
-                    Value::Closure(closure)
+                    Rc::new(Value::Closure(closure))
                 };
 
                 if let Some(id) = id {
-                    environment.set(&id, value, id_node.as_ref().unwrap().range());
+                    environment.set(id, value, id_node.as_ref().unwrap().range());
                 }
 
-                Value::Nil
+                self.nil_value.clone()
             }
             AstNode::Lambda {
                 params: fn_params,
@@ -715,11 +760,11 @@ impl Interpreter {
                 let mut params = Vec::new();
                 for param in fn_params {
                     match param {
-                        AstNode::Ident { name, .. } => {
-                            if name == "_" {
+                        AstNode::Ident { ref name, .. } => {
+                            if *name == UNDERLINE {
                                 return Err(InterpreterError::InvalidFunctionParam(param.range()));
                             } else {
-                                params.push(name.to_owned())
+                                params.push(name.clone())
                             }
                         }
                         _ => unreachable!(),
@@ -728,11 +773,11 @@ impl Interpreter {
 
                 let closure = Closure {
                     params,
-                    body: *body.to_owned(),
-                    env: environment.to_owned(),
+                    body: *body.clone(),
+                    env: environment.clone(),
                 };
 
-                Value::Closure(closure)
+                Rc::new(Value::Closure(closure))
             }
             AstNode::Case { expr, cases, .. } => {
                 // TODO: Require every case pattern to be unique
@@ -746,17 +791,15 @@ impl Interpreter {
                         _ => unreachable!(),
                     };
 
-                    match **pattern {
-                        AstNode::CasePattern {
-                            ref kind, ref expr, ..
-                        } => match kind {
+                    match pattern.as_ref() {
+                        AstNode::CasePattern { kind, expr, .. } => match kind {
                             CasePatternKind::Expr => {
                                 let expr = self.eval(&expr, environment)?;
 
-                                if match expr {
-                                    Value::List(ref list) => {
-                                        let expr_items = match case_expr {
-                                            Value::List(ref items) => items,
+                                if match expr.borrow() {
+                                    Value::List(list) => {
+                                        let expr_items = match case_expr.borrow() {
+                                            Value::List(items) => items,
                                             _ => Err(InterpreterError::PatternTypeMismatch(
                                                 pattern.range(),
                                                 typeof_value(&case_expr),
@@ -772,7 +815,7 @@ impl Interpreter {
                                             for (item, expr_item) in
                                                 list.iter().zip(expr_items.iter())
                                             {
-                                                if *item == Value::Any {
+                                                if **item == Value::Any {
                                                     continue;
                                                 }
 
@@ -791,13 +834,14 @@ impl Interpreter {
                                 }
                             }
                             CasePatternKind::Or => {
-                                let list = match self.eval(&expr, environment)? {
+                                let expr = self.eval(&expr, environment)?;
+                                let list = match expr.borrow() {
                                     Value::List(list) => list,
                                     _ => unreachable!(),
                                 };
 
-                                for item in list {
-                                    if item == Value::Any || case_expr == item {
+                                for item in list.iter() {
+                                    if **item == Value::Any || case_expr == *item {
                                         return self.eval(body, environment);
                                     }
                                 }
@@ -810,7 +854,7 @@ impl Interpreter {
                     }
                 }
 
-                Value::Nil
+                self.nil_value.clone()
             }
             AstNode::FuncCall {
                 callee,
@@ -819,48 +863,51 @@ impl Interpreter {
             } => {
                 let mut args = Vec::new();
                 for arg in pre_args {
-                    args.push(self.eval(arg, environment)?);
+                    let value = self.eval(arg, environment)?;
+                    args.push(value);
                 }
 
-                let result = match **callee {
-                    AstNode::Ident { ref name, range } => match environment.get(&name) {
-                        Some((Value::Closure(closure), _)) => {
-                            // TODO: Should we handle recursion?
-                            self.apply_closure(Some(callee.as_ref()), closure, args)?
-                        }
-                        Some((Value::NativeFunction(method), _)) => {
-                            // self.apply_native(method, args, range)?
-                            method(args, range)?
-                        }
-                        Some((value, _)) => {
-                            if args.len() != 0 {
-                                return Err(InterpreterError::NotCallable(
-                                    *callee.to_owned(),
-                                    callee.range(),
-                                ));
-                            } else {
-                                value.to_owned()
+                let result = match callee.borrow() {
+                    AstNode::Ident { name, range } => {
+                        if let Some((value, _)) = environment.get(name) {
+                            match value.borrow() {
+                                Value::Closure(closure) => {
+                                    // TODO: Should we handle recursion?
+                                    let result =
+                                        self.apply_closure(Some(callee.as_ref()), closure, args)?;
+                                    return Ok(result);
+                                }
+                                Value::NativeFunction(method) => {
+                                    let result = method(args, *range)?;
+                                    return Ok(result);
+                                }
+                                _ => {
+                                    if args.len() != 0 {
+                                        return Err(InterpreterError::NotCallable(
+                                            *callee.clone(),
+                                            callee.range(),
+                                        ));
+                                    }
+                                }
                             }
+
+                            value.clone()
+                        } else {
+                            return Err(InterpreterError::UndefinedVariable(name.clone(), *range));
                         }
-                        _ => {
-                            return Err(InterpreterError::UndefinedVariable(
-                                name.to_string(),
-                                range,
-                            ))
-                        }
-                    },
+                    }
                     AstNode::FuncCall { .. } => {
                         let callee_closure = self.eval(callee.as_ref(), environment)?;
-                        let callee_closure = match callee_closure {
+                        let callee_closure = match callee_closure.borrow() {
                             Value::Closure(closure) => closure,
                             _ => unreachable!(),
                         };
 
-                        self.apply_closure(Some(callee.as_ref()), &callee_closure, args)?
+                        self.apply_closure(Some(callee.as_ref()), callee_closure, args)?
                     }
                     _ => {
                         return Err(InterpreterError::NotCallable(
-                            *callee.to_owned(),
+                            *callee.clone(),
                             callee.range(),
                         ));
                     }
@@ -875,35 +922,35 @@ impl Interpreter {
                 ..
             } => {
                 let id = match id.as_ref() {
-                    AstNode::Ident { ref name, .. } => name,
+                    AstNode::Ident { name, .. } => name,
                     _ => unreachable!(),
                 };
 
                 let expr = self.eval(expr_node, environment)?;
-                match expr {
+                match expr.borrow() {
                     Value::List(items) => {
                         let mut result = Vec::new();
 
-                        let env = environment.to_owned();
+                        let env = environment.clone();
                         let closure = Closure {
-                            params: vec![id.to_owned()],
-                            body: *body.to_owned(),
+                            params: vec![id.clone()],
+                            body: *body.clone(),
                             env,
                         };
 
-                        for item in items {
-                            result.push(self.apply_closure(None, &closure, vec![item])?);
+                        for item in items.iter() {
+                            result.push(self.apply_closure(None, &closure, vec![item.clone()])?);
                         }
 
-                        Value::List(result)
+                        Rc::new(Value::List(result.into()))
                     }
                     Value::String(value) => {
                         let mut result = Vec::new();
 
-                        let env = environment.to_owned();
+                        let env = environment.clone();
                         let closure = Closure {
-                            params: vec![id.to_owned()],
-                            body: *body.to_owned(),
+                            params: vec![id.clone()],
+                            body: *body.clone(),
                             env,
                         };
 
@@ -911,35 +958,44 @@ impl Interpreter {
                             result.push(self.apply_closure(
                                 None,
                                 &closure,
-                                vec![Value::String(c.to_string())],
+                                vec![Rc::new(Value::String(c.into()))],
                             )?);
                         }
 
-                        Value::List(result)
+                        Rc::new(Value::List(result.into()))
                     }
-                    _ => Err(InterpreterError::NotIterable(expr, expr_node.range()))?,
+                    _ => {
+                        return Err(InterpreterError::NotIterable(
+                            expr.clone(),
+                            expr_node.range(),
+                        ))?;
+                    }
                 }
             }
-            AstNode::Ident { ref name, range } => {
-                if *name == "_".to_string() {
-                    return Ok(Value::Any);
+            AstNode::Ident { name, range } => {
+                if *name == UNDERLINE {
+                    return Ok(self.any_value.clone());
                 }
 
-                match environment.get(&name) {
-                    Some((Value::Closure(closure), _)) => {
-                        self.apply_closure(Some(&node), closure, vec![])?
+                if let Some((value, _)) = environment.get(name) {
+                    match value.borrow() {
+                        Value::Closure(closure) => {
+                            let result = self.apply_closure(Some(node), closure, vec![])?;
+                            return Ok(result);
+                        }
+                        Value::NativeFunction(method) => {
+                            let result = method(vec![], *range)?;
+                            return Ok(result);
+                        }
+                        _ => {}
                     }
-                    Some((Value::NativeFunction(method), _)) => {
-                        // self.apply_native(method, vec![], *range)?
-                        method(vec![], *range)?
-                    }
-                    Some((value, _)) => value.to_owned(),
-                    None => {
-                        return Err(InterpreterError::UndefinedVariable(
-                            name.to_string(),
-                            node.range(),
-                        ))
-                    }
+
+                    return Ok(value.clone());
+                } else {
+                    return Err(InterpreterError::UndefinedVariable(
+                        name.clone(),
+                        node.range(),
+                    ));
                 }
             }
             AstNode::StrLit {
@@ -948,12 +1004,12 @@ impl Interpreter {
                 range,
             } => {
                 if *is_format {
-                    self.eval_fmt_string(&value, *range, environment)?
+                    self.eval_fmt_string(value, *range, environment)?
                 } else {
-                    Value::String(value.to_owned())
+                    Rc::new(Value::String(value.clone()))
                 }
             }
-            AstNode::NumLit { value, .. } => Value::Number(*value),
+            AstNode::NumLit { value, .. } => Rc::new(Value::Number(*value)),
             AstNode::List { items, .. } => {
                 let mut result = Vec::new();
 
@@ -962,14 +1018,14 @@ impl Interpreter {
                     result.push(value);
                 }
 
-                Value::List(result)
+                Rc::new(Value::List(result.into()))
             }
             AstNode::Record { keys, values, .. } => {
                 let mut record = FxHashMap::default();
 
                 for (key, value) in keys.iter().zip(values.iter()) {
                     let key = match key {
-                        AstNode::StrLit { value, .. } => value.to_owned(),
+                        AstNode::StrLit { value, .. } => value.clone(),
                         _ => unreachable!(),
                     };
                     let value = self.eval(value, environment)?;
@@ -977,7 +1033,7 @@ impl Interpreter {
                     record.insert(key, value);
                 }
 
-                Value::Record(record)
+                Rc::new(Value::Record(record))
             }
             AstNode::Range {
                 mode,
@@ -985,23 +1041,25 @@ impl Interpreter {
                 end: end_node,
                 ..
             } => {
-                let start = match self.eval(start_node, environment)? {
+                let start = self.eval(start_node, environment)?;
+                let start = match start.borrow() {
                     Value::Number(value) => value,
                     value => {
                         return Err(InterpreterError::TypeMismatch(
                             start_node.range(),
-                            "number".to_string(),
+                            "number",
                             typeof_value(&value),
                         ))
                     }
                 };
 
-                let end = match self.eval(end_node, environment)? {
+                let end = self.eval(end_node, environment)?;
+                let end = match end.borrow() {
                     Value::Number(value) => value,
                     value => {
                         return Err(InterpreterError::TypeMismatch(
                             end_node.range(),
-                            "number".to_string(),
+                            "number",
                             typeof_value(&value),
                         ))
                     }
@@ -1012,18 +1070,18 @@ impl Interpreter {
 
                 match mode {
                     RangeMode::Inclusive => {
-                        for i in start as usize..=end as usize {
-                            result.push(Value::Number(i as f64));
+                        for i in (*start as usize)..=(*end as usize) {
+                            result.push(Rc::new(Value::Number(i as f64)));
                         }
                     }
                     RangeMode::Exclusive => {
-                        for i in start as usize..end as usize {
-                            result.push(Value::Number(i as f64));
+                        for i in (*start as usize)..(*end as usize) {
+                            result.push(Rc::new(Value::Number(i as f64)));
                         }
                     }
                 }
 
-                Value::List(result)
+                Rc::new(Value::List(result.into()))
             }
             _ => todo!("eval {:?}", node),
         };
@@ -1035,7 +1093,7 @@ impl Interpreter {
         &mut self,
         callee: Option<&AstNode>,
         closure: &Closure,
-        args: Vec<Value>,
+        args: Vec<Rc<Value>>,
     ) -> IResult {
         if closure.params.len() != args.len() {
             let callee = match callee {
@@ -1050,9 +1108,9 @@ impl Interpreter {
             ));
         }
 
-        let mut env = closure.env.to_owned();
+        let mut env = closure.env.clone();
         for (param, arg) in closure.params.iter().zip(args.iter()) {
-            env.set(param, arg.to_owned(), (0, 0));
+            env.set(param, arg.clone(), (0, 0));
         }
 
         self.eval(&closure.body, &mut env)
@@ -1060,7 +1118,7 @@ impl Interpreter {
 
     fn eval_fmt_string(
         &mut self,
-        value: &String,
+        value: &EcoString,
         range: Range,
         environment: &mut Environment,
     ) -> IResult {
@@ -1075,20 +1133,21 @@ impl Interpreter {
             swaps.push((name, range));
         }
 
-        let mut result = String::new();
+        let mut result = EcoString::new();
         let mut chars = value.chars().peekable().enumerate();
 
         for (name, (start, end)) in swaps {
             while let Some((i, c)) = chars.next() {
                 if i == start {
                     let name = AstNode::Ident {
-                        name: name.to_owned(),
+                        name: EcoString::from(name.to_owned()),
                         range,
                     };
+
                     let value = self.eval(&name, environment)?;
-                    let value = match value {
-                        Value::String(value) => value,
-                        value => value.to_string(),
+                    let value = match value.borrow() {
+                        Value::String(value) => value.clone(),
+                        value => EcoString::from(value.to_string()),
                     };
 
                     result.push_str(&value);
@@ -1109,6 +1168,6 @@ impl Interpreter {
             result.push(c);
         }
 
-        Ok(Value::String(result))
+        Ok(Rc::new(Value::String(EcoString::from(result))))
     }
 }

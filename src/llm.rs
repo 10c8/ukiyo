@@ -1,11 +1,13 @@
+use ecow::EcoString;
+
 mod openai;
 
 pub struct GenOptions {
-    pub prompt: String,
-    pub context: Option<String>,
-    pub max_tokens: u32,
+    pub prompt: EcoString,
+    pub context: Option<EcoString>,
+    pub max_tokens: usize,
     pub temperature: f32,
-    pub stop: Vec<String>,
+    pub stop: Vec<EcoString>,
 }
 
 pub enum LLMType {
@@ -24,7 +26,7 @@ pub enum LLMType {
 
 pub struct LLMConfig {
     pub llm_type: LLMType,
-    pub max_tokens: u32,
+    pub max_tokens: usize,
     pub temperature: f32,
 }
 
@@ -36,7 +38,7 @@ impl Default for LLMConfig {
                 api_key: "",
                 org: "",
             },
-            max_tokens: 64,
+            max_tokens: 512,
             temperature: 0.7,
         }
     }
@@ -54,17 +56,17 @@ impl LLM {
     pub fn generate(
         &self,
         prompt: &str,
-        context: Option<String>,
-        max_tokens: Option<u32>,
+        context: Option<EcoString>,
+        max_tokens: Option<usize>,
         temperature: Option<f32>,
-        stop: Option<Vec<String>>,
+        stop: Option<Vec<EcoString>>,
     ) -> String {
         let options = GenOptions {
-            prompt: prompt.to_string(),
+            prompt: prompt.into(),
             context,
             max_tokens: max_tokens.unwrap_or(self.config.max_tokens),
             temperature: temperature.unwrap_or(self.config.temperature),
-            stop: stop.unwrap_or(vec!["\n".to_string()]),
+            stop: stop.unwrap_or(vec!["\n".into()]),
         };
 
         match self.config.llm_type {

@@ -5,14 +5,15 @@ use super::GenOptions;
 
 #[derive(Debug, Serialize, Deserialize)]
 struct CompletionsMessage {
-    role: String,
-    content: String,
+    role: Box<str>,
+    content: Box<str>,
 }
 
 #[derive(Serialize)]
 struct CompletionsRequest {
-    model: String,
+    model: Box<str>,
     messages: Vec<CompletionsMessage>,
+    max_tokens: usize,
     temperature: f32,
     stop: Vec<String>,
 }
@@ -28,22 +29,22 @@ struct CompletionsResponseUsage {
 struct CompletionsResponseChoice {
     message: CompletionsMessage,
     logprobs: Option<()>,
-    finish_reason: String,
+    finish_reason: Box<str>,
     index: usize,
 }
 
 #[derive(Serialize, Deserialize)]
 struct CompletionsResponse {
-    id: String,
-    object: String,
+    id: Box<str>,
+    object: Box<str>,
     created: usize,
-    model: String,
+    model: Box<str>,
     choices: Vec<CompletionsResponseChoice>,
 }
 
-pub fn generate(options: GenOptions, model: &str, api_key: &str, org: &str) -> String {
-    // let url = "https://api.openai.com/v1/chat/completions";
-    let url = "http://127.0.0.1:8080/v1/chat/completions";
+pub fn generate(options: GenOptions, model: &'static str, api_key: &str, org: &str) -> String {
+    let url = "https://api.openai.com/v1/chat/completions";
+    // let url = "http://127.0.0.1:8080/v1/chat/completions";
 
     let mut headers = HeaderMap::new();
     headers.insert("Content-Type", "application/json".parse().unwrap());
@@ -57,21 +58,24 @@ pub fn generate(options: GenOptions, model: &str, api_key: &str, org: &str) -> S
 
     if options.context.is_some() {
         messages.push(CompletionsMessage {
-            role: "system".to_string(),
-            content: format!("<s>[INST] {} [/INST]", options.context.unwrap()),
+            role: "system".into(),
+            // content: format!("<s>[INST] {} [/INST]", options.context.unwrap()).into(),
+            content: options.context.unwrap().to_string().into(),
         });
     }
 
     messages.push(CompletionsMessage {
-        role: "user".to_string(),
-        content: format!("[INST] {} [/INST]", options.prompt),
+        role: "user".into(),
+        // content: format!("[INST] {} [/INST]", options.prompt).into(),
+        content: options.prompt.to_string().into(),
     });
 
     let body = CompletionsRequest {
-        model: model.to_string(),
+        model: model.into(),
         messages,
+        max_tokens: options.max_tokens,
         temperature: options.temperature,
-        stop: options.stop,
+        stop: options.stop.iter().map(|x| x.to_string()).collect(),
     };
     let body = serde_json::to_string(&body).unwrap();
 
@@ -83,5 +87,5 @@ pub fn generate(options: GenOptions, model: &str, api_key: &str, org: &str) -> S
 
     let res: CompletionsResponse = serde_json::from_value(res).unwrap();
     let res = res.choices[0].message.content.clone();
-    res
+    res.to_string()
 }
