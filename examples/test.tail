@@ -1,13 +1,67 @@
-const fruits -> ["apple", "banana", "avocado", "durian", "tomato"]
-const colors -> ["red", "yellow", "green", "brown", "red"]
+# Y f -> (!x -> x &x) (!y -> f (!a -> (y &y) a))
 
-const pairs -> record (zip fruits (map colors !c -> {
-  color: c,
-  is_red: (eq c "red")
-}))
+# fac f -> !n -> case (lt n 2) of
+#   true  => 1
+#   false => mul n (f (sub n 1))
 
-join (map pairs !name info ->
-  case info @ "is_red" of
-    true  => $"{{name}}s are cool as fuck!"
-    false => $"{{name}}s are not cool, they are {{info @ "color"}}!"
-) "\n"
+# fib f -> !n -> case n of
+#   0 => 0
+#   1 => 1
+#   _ => add (f (sub n 1)) (f (sub n 2))
+
+# join [
+#   (0 ..< 10 |i| (Y &fac) i),
+#   (0 ..< 10 |i| (Y &fib) i)
+# ] "\n"
+
+##
+
+# beer n -> case n of
+#   0 => "better go to the store and buy some more."
+#   1 => ~"
+#   1 bottle of beer on the wall
+#   1 bottle of beer
+#   Take one down, pass it around
+#   "~
+#   _ => $~"
+#   {{n}} bottles of beer on the wall
+#   {{n}} bottles of beer
+#   Take one down, pass it around
+#   {{head (lines (beer (sub n 1)))}}
+
+#   "~
+
+# join (map 99..=0 &beer) "\n"
+
+merge a b ->
+  case (len a) of
+    0 => b
+    _ => case (len b) of
+      0 => a
+      _ => case (lt (head a) (head b)) of
+        true  => [(head a)] ++ (merge (tail a) b)
+        false => [(head b)] ++ (merge a (tail b))
+
+mergesort x ->
+  case (lt (len x) 2) of
+    true  => x
+    false =>
+      const h -> div (len x) 2
+      merge (mergesort (take x h)) (mergesort (drop x h))
+
+shuffle ns -> case (lte (len ns) 1) of
+  true  => ns
+  false =>
+    const i -> rand 0 (len ns)
+    const x -> head (drop ns i)
+    const xs -> (take ns i) ++ (drop ns (add i 1))
+    [x] ++ (shuffle xs)
+
+const shuffled -> shuffle 0..=10
+
+$~"
+
+before: {{shuffled}}
+after:  {{mergesort shuffled}}
+
+"~

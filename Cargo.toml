@@ -1,7 +1,14 @@
 [package]
-name = "ukiyo"
-version = "0.1.0"
+name = "tail"
+version = "0.2.0"
 edition = "2021"
+
+[profile.release]
+strip = true
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"
 
 [dependencies]
 codespan-reporting = ">=0.11.1"

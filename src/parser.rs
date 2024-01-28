@@ -65,9 +65,14 @@ pub enum AstNode {
         args: EcoVec<AstNode>,
         range: Range,
     },
-    Indexing {
+    IndexingOp {
         expr: Box<AstNode>,
         index: Box<AstNode>,
+        range: Range,
+    },
+    ConcatOp {
+        left: Box<AstNode>,
+        right: Box<AstNode>,
         range: Range,
     },
     IterationOp {
@@ -133,7 +138,8 @@ impl AstNode {
             | AstNode::CaseBranch { range, .. }
             | AstNode::CasePattern { range, .. }
             | AstNode::FuncCall { range, .. }
-            | AstNode::Indexing { range, .. }
+            | AstNode::IndexingOp { range, .. }
+            | AstNode::ConcatOp { range, .. }
             | AstNode::IterationOp { range, .. }
             | AstNode::Ident { range, .. }
             | AstNode::BoolLit { range, .. }
@@ -587,6 +593,7 @@ impl Parser {
     fn parse_expr_stmt(&mut self) -> PResult {
         let expr = any! {
             self: parse_indexing, "indexing"
+                | parse_concat, "concatenation"
                 | parse_iteration_op, "iterator"
                 | parse_func_call, "function call"
                 | parse_expr, "expression"
@@ -725,6 +732,7 @@ impl Parser {
                 | parse_case, "case statement"
                 | parse_lambda, "lambda"
                 | parse_indexing, "indexing"
+                | parse_concat, "concatenation"
                 | parse_func_decl, "function declaration"
                 | parse_iteration_op, "iterator"
                 | parse_func_call, "function call"
@@ -849,6 +857,9 @@ impl Parser {
     fn parse_case_body(&mut self) -> PResult {
         any! {
             self: parse_block, "indented block"
+                | parse_case, "case statement"
+                | parse_concat, "concatenation"
+                | parse_indexing, "indexing"
                 | parse_func_call, "function call"
                 | parse_expr, "expression"
         }
@@ -897,6 +908,7 @@ impl Parser {
         any! {
             self: parse_range, "range"
                 | parse_indexing, "indexing"
+                | parse_concat, "concatenation"
                 | parse_identifier, "identifier"
                 | parse_bool, "boolean"
                 | parse_string, "string"
@@ -913,6 +925,7 @@ impl Parser {
         let id = any! {
             self: parse_identifier, "identifier"
                 | parse_func_ref, "function reference"
+                | parse_par_expr, "expression"
                 | parse_par_func_call, "function call"
         }?;
 
@@ -975,9 +988,40 @@ impl Parser {
 
         let range = (expr.range().0, index.range().1);
 
-        Ok(AstNode::Indexing {
+        Ok(AstNode::IndexingOp {
             expr: Box::new(expr),
             index: Box::new(index),
+            range,
+        })
+    }
+
+    fn parse_concat(&mut self) -> PResult {
+        let left = any! {
+            self: parse_range, "range"
+                | parse_identifier, "identifier"
+                | parse_list, "list"
+                | parse_record, "record"
+                | parse_func_ref, "function reference"
+                | parse_par_expr, "expression"
+        }?;
+
+        token!("`++`"; self: Token::ConcatOperator { .. })?;
+
+        let right = any! {
+            self: parse_range, "range"
+                | parse_identifier, "identifier"
+                | parse_list, "list"
+                | parse_record, "record"
+                | parse_func_ref, "function reference"
+                | parse_par_expr, "expression"
+        };
+        let right = self.cut(right)?;
+
+        let range = (left.range().0, right.range().1);
+
+        Ok(AstNode::ConcatOp {
+            left: Box::new(left),
+            right: Box::new(right),
             range,
         })
     }
@@ -1258,6 +1302,7 @@ impl Parser {
 
         let expr = any! {
             self: parse_indexing, "indexing"
+                | parse_concat, "concatenation"
                 | parse_iteration_op, "iterator"
                 | parse_func_call, "function call"
                 | parse_expr, "expression"

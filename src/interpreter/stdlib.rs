@@ -1,4 +1,4 @@
-use std::{borrow::Borrow, rc::Rc};
+use std::{borrow::Borrow, sync::Arc};
 
 use ecow::EcoString;
 use once_cell::sync::Lazy;
@@ -45,6 +45,9 @@ impl StdLib {
         native_fn!("frand"; env: StdLib::std_frand);
         native_fn!("lrand"; env: StdLib::std_lrand);
 
+        // String functions
+        native_fn!("lines"; env: StdLib::std_lines);
+
         // Collection functions
         native_fn!("len"; env: StdLib::std_len);
         native_fn!("join"; env: StdLib::std_join);
@@ -52,6 +55,8 @@ impl StdLib {
         native_fn!("last"; env: StdLib::std_last);
         native_fn!("head"; env: StdLib::std_head);
         native_fn!("tail"; env: StdLib::std_tail);
+        native_fn!("take"; env: StdLib::std_take);
+        native_fn!("drop"; env: StdLib::std_drop);
         native_fn!("enumerate"; env: StdLib::std_enumerate);
         native_fn!("map"; env: StdLib::std_map);
         native_fn!("zip"; env: StdLib::std_zip);
@@ -65,7 +70,7 @@ impl StdLib {
     }
 
     // Debug
-    pub fn std_trace(args: Vec<Rc<Value>>, range: Range) -> IResult {
+    pub fn std_trace(args: Vec<Arc<Value>>, range: Range) -> IResult {
         native_arg_count!("trace"; args == 1; range);
 
         let value = native_arg!("trace"; args @ 0; range);
@@ -76,7 +81,7 @@ impl StdLib {
     }
 
     // Logic
-    pub fn std_eq(args: Vec<Rc<Value>>, range: Range) -> IResult {
+    pub fn std_eq(args: Vec<Arc<Value>>, range: Range) -> IResult {
         native_arg_count!("eq"; args == 2; range);
 
         let a = native_arg!("eq"; args @ 0; range);
@@ -85,7 +90,7 @@ impl StdLib {
         Ok(Value::Boolean(a == b).into())
     }
 
-    pub fn std_neq(args: Vec<Rc<Value>>, range: Range) -> IResult {
+    pub fn std_neq(args: Vec<Arc<Value>>, range: Range) -> IResult {
         native_arg_count!("neq"; args == 2; range);
 
         let a = native_arg!("neq"; args @ 0; range);
@@ -94,7 +99,7 @@ impl StdLib {
         Ok(Value::Boolean(a != b).into())
     }
 
-    pub fn std_gt(args: Vec<Rc<Value>>, range: Range) -> IResult {
+    pub fn std_gt(args: Vec<Arc<Value>>, range: Range) -> IResult {
         native_arg_count!("gt"; args == 2; range);
 
         let a = native_arg!("gt"; args @ 0; range);
@@ -119,7 +124,7 @@ impl StdLib {
         }
     }
 
-    pub fn std_lt(args: Vec<Rc<Value>>, range: Range) -> IResult {
+    pub fn std_lt(args: Vec<Arc<Value>>, range: Range) -> IResult {
         native_arg_count!("lt"; args == 2; range);
 
         let a = native_arg!("lt"; args @ 0; range);
@@ -144,7 +149,7 @@ impl StdLib {
         }
     }
 
-    pub fn std_gte(args: Vec<Rc<Value>>, range: Range) -> IResult {
+    pub fn std_gte(args: Vec<Arc<Value>>, range: Range) -> IResult {
         native_arg_count!("gte"; args == 2; range);
 
         let a = native_arg!("gte"; args @ 0; range);
@@ -169,7 +174,7 @@ impl StdLib {
         }
     }
 
-    pub fn std_lte(args: Vec<Rc<Value>>, range: Range) -> IResult {
+    pub fn std_lte(args: Vec<Arc<Value>>, range: Range) -> IResult {
         native_arg_count!("lte"; args == 2; range);
 
         let a = native_arg!("lte"; args @ 0; range);
@@ -195,7 +200,7 @@ impl StdLib {
     }
 
     // Math
-    pub fn std_add(args: Vec<Rc<Value>>, range: Range) -> IResult {
+    pub fn std_add(args: Vec<Arc<Value>>, range: Range) -> IResult {
         native_arg_count!("add"; args == 2; range);
 
         let a = native_arg!("add"; args @ 0 => Number @ range);
@@ -206,7 +211,7 @@ impl StdLib {
         Ok(Value::Number((result as i64) as f64).into())
     }
 
-    pub fn std_fadd(args: Vec<Rc<Value>>, range: Range) -> IResult {
+    pub fn std_fadd(args: Vec<Arc<Value>>, range: Range) -> IResult {
         native_arg_count!("fadd"; args == 2; range);
 
         let a = native_arg!("fadd"; args @ 0 => Number @ range);
@@ -217,7 +222,7 @@ impl StdLib {
         Ok(Value::Number(result).into())
     }
 
-    pub fn std_sub(args: Vec<Rc<Value>>, range: Range) -> IResult {
+    pub fn std_sub(args: Vec<Arc<Value>>, range: Range) -> IResult {
         native_arg_count!("sub"; args == 2; range);
 
         let a = native_arg!("sub"; args @ 0 => Number @ range);
@@ -228,7 +233,7 @@ impl StdLib {
         Ok(Value::Number((result as i64) as f64).into())
     }
 
-    pub fn std_fsub(args: Vec<Rc<Value>>, range: Range) -> IResult {
+    pub fn std_fsub(args: Vec<Arc<Value>>, range: Range) -> IResult {
         native_arg_count!("fsub"; args == 2; range);
 
         let a = native_arg!("fsub"; args @ 0 => Number @ range);
@@ -239,7 +244,7 @@ impl StdLib {
         Ok(Value::Number(result).into())
     }
 
-    pub fn std_mul(args: Vec<Rc<Value>>, range: Range) -> IResult {
+    pub fn std_mul(args: Vec<Arc<Value>>, range: Range) -> IResult {
         native_arg_count!("mul"; args == 2; range);
 
         let a = native_arg!("mul"; args @ 0 => Number @ range);
@@ -250,7 +255,7 @@ impl StdLib {
         Ok(Value::Number((result as i64) as f64).into())
     }
 
-    pub fn std_fmul(args: Vec<Rc<Value>>, range: Range) -> IResult {
+    pub fn std_fmul(args: Vec<Arc<Value>>, range: Range) -> IResult {
         native_arg_count!("fmul"; args == 2; range);
 
         let a = native_arg!("fmul"; args @ 0 => Number @ range);
@@ -261,7 +266,7 @@ impl StdLib {
         Ok(Value::Number(result).into())
     }
 
-    pub fn std_div(args: Vec<Rc<Value>>, range: Range) -> IResult {
+    pub fn std_div(args: Vec<Arc<Value>>, range: Range) -> IResult {
         native_arg_count!("div"; args == 2; range);
 
         let a = native_arg!("div"; args @ 0 => Number @ range);
@@ -272,7 +277,7 @@ impl StdLib {
         Ok(Value::Number((result as i64) as f64).into())
     }
 
-    pub fn std_fdiv(args: Vec<Rc<Value>>, range: Range) -> IResult {
+    pub fn std_fdiv(args: Vec<Arc<Value>>, range: Range) -> IResult {
         native_arg_count!("fdiv"; args == 2; range);
 
         let a = native_arg!("fdiv"; args @ 0 => Number @ range);
@@ -283,7 +288,7 @@ impl StdLib {
         Ok(Value::Number(result).into())
     }
 
-    pub fn std_mod(args: Vec<Rc<Value>>, range: Range) -> IResult {
+    pub fn std_mod(args: Vec<Arc<Value>>, range: Range) -> IResult {
         native_arg_count!("mod"; args == 2; range);
 
         let a = native_arg!("mod"; args @ 0 => Number @ range);
@@ -292,31 +297,31 @@ impl StdLib {
         Ok(Value::Number(a % b).into())
     }
 
-    pub fn std_rand(args: Vec<Rc<Value>>, range: Range) -> IResult {
+    pub fn std_rand(args: Vec<Arc<Value>>, range: Range) -> IResult {
         native_arg_count!("rand"; args == 2; range);
 
         let min = native_arg!("rand"; args @ 0 => Number @ range);
         let max = native_arg!("rand"; args @ 1 => Number @ range);
 
         let mut rng = rand::thread_rng();
-        let result = rng.gen_range(*min..*max) as i64;
+        let result = rng.gen_range(*min..=*max) as i64;
 
         Ok(Value::Number(result as f64).into())
     }
 
-    pub fn std_frand(args: Vec<Rc<Value>>, range: Range) -> IResult {
+    pub fn std_frand(args: Vec<Arc<Value>>, range: Range) -> IResult {
         native_arg_count!("randf"; args == 2; range);
 
         let min = native_arg!("randf"; args @ 0 => Number @ range);
         let max = native_arg!("randf"; args @ 1 => Number @ range);
 
         let mut rng = rand::thread_rng();
-        let result = rng.gen_range(*min..*max);
+        let result = rng.gen_range(*min..=*max);
 
         Ok(Value::Number(result).into())
     }
 
-    pub fn std_lrand(args: Vec<Rc<Value>>, range: Range) -> IResult {
+    pub fn std_lrand(args: Vec<Arc<Value>>, range: Range) -> IResult {
         native_arg_count!("randl"; args == 1; range);
 
         let list = native_arg!("randl"; args @ 0 => List @ range);
@@ -327,8 +332,22 @@ impl StdLib {
         Ok(list[result].clone())
     }
 
+    // Strings
+    pub fn std_lines(args: Vec<Arc<Value>>, range: Range) -> IResult {
+        native_arg_count!("lines"; args == 1; range);
+
+        let value = native_arg!("lines"; args @ 0 => String @ range);
+
+        let mut result = Vec::new();
+        for line in value.lines() {
+            result.push(Arc::new(Value::String(EcoString::from(line))));
+        }
+
+        Ok(Value::List(result.into()).into())
+    }
+
     // Collections
-    pub fn std_len(args: Vec<Rc<Value>>, range: Range) -> IResult {
+    pub fn std_len(args: Vec<Arc<Value>>, range: Range) -> IResult {
         native_arg_count!("len"; args == 1; range);
 
         let value = args.get(0).unwrap();
@@ -347,7 +366,7 @@ impl StdLib {
         Ok(Value::Number(result as f64).into())
     }
 
-    pub fn std_join(args: Vec<Rc<Value>>, range: Range) -> IResult {
+    pub fn std_join(args: Vec<Arc<Value>>, range: Range) -> IResult {
         native_arg_count!("join"; args == 2; range);
 
         let list = native_arg!("join"; args @ 0 => List @ range);
@@ -368,7 +387,7 @@ impl StdLib {
         Ok(Value::String(result.into()).into())
     }
 
-    pub fn std_init(args: Vec<Rc<Value>>, range: Range) -> IResult {
+    pub fn std_init(args: Vec<Arc<Value>>, range: Range) -> IResult {
         native_arg_count!("init"; args == 1; range);
 
         let mut list = native_arg!("init"; args @ 0 => List @ range).to_owned();
@@ -385,7 +404,7 @@ impl StdLib {
         Ok(Value::List(list).into())
     }
 
-    pub fn std_last(args: Vec<Rc<Value>>, range: Range) -> IResult {
+    pub fn std_last(args: Vec<Arc<Value>>, range: Range) -> IResult {
         native_arg_count!("last"; args == 1; range);
 
         let list = native_arg!("last"; args @ 0 => List @ range);
@@ -403,25 +422,50 @@ impl StdLib {
         Ok(last.clone())
     }
 
-    pub fn std_head(args: Vec<Rc<Value>>, range: Range) -> IResult {
+    pub fn std_head(args: Vec<Arc<Value>>, range: Range) -> IResult {
         native_arg_count!("head"; args == 1; range);
 
-        let list = native_arg!("head"; args @ 0 => List @ range);
+        let list = native_arg!("head"; args @ 0; range);
 
-        let head = match list.first() {
-            Some(head) => head,
-            None => {
+        let head = match list.borrow() {
+            Value::String(value) => {
+                if value.len() == 0 {
+                    return Err(InterpreterError::NativeFunctionError(
+                        "head: String is empty.",
+                        range,
+                    ));
+                }
+
+                Arc::new(Value::String(EcoString::from(
+                    value.chars().next().unwrap(),
+                )))
+            }
+            Value::List(value) => {
+                if value.len() == 0 {
+                    return Err(InterpreterError::NativeFunctionError(
+                        "head: List is empty.",
+                        range,
+                    ));
+                }
+
+                value[0].clone()
+            }
+            _ => {
                 return Err(InterpreterError::NativeFunctionError(
-                    "head: List is empty.",
+                    format!(
+                        "head: Expected string or list, found {}.",
+                        typeof_value(list)
+                    )
+                    .leak(),
                     range,
-                ))
+                ));
             }
         };
 
-        Ok(head.clone())
+        Ok(head)
     }
 
-    pub fn std_tail(args: Vec<Rc<Value>>, range: Range) -> IResult {
+    pub fn std_tail(args: Vec<Arc<Value>>, range: Range) -> IResult {
         native_arg_count!("tail"; args == 1; range);
 
         let mut list = native_arg!("tail"; args @ 0 => List @ range).to_owned();
@@ -438,7 +482,45 @@ impl StdLib {
         Ok(Value::List(list).into())
     }
 
-    pub fn std_enumerate(args: Vec<Rc<Value>>, range: Range) -> IResult {
+    pub fn std_take(args: Vec<Arc<Value>>, range: Range) -> IResult {
+        native_arg_count!("take"; args == 2; range);
+
+        let list = native_arg!("take"; args @ 0 => List @ range);
+        let count = native_arg!("take"; args @ 1 => Number @ range);
+
+        let count = *count as usize;
+        if count > list.len() {
+            return Err(InterpreterError::NativeFunctionError(
+                "take: Count is greater than list length.",
+                range,
+            ));
+        }
+
+        let result = list[0..count].to_vec().into();
+
+        Ok(Value::List(result).into())
+    }
+
+    pub fn std_drop(args: Vec<Arc<Value>>, range: Range) -> IResult {
+        native_arg_count!("drop"; args == 2; range);
+
+        let list = native_arg!("drop"; args @ 0 => List @ range);
+        let count = native_arg!("drop"; args @ 1 => Number @ range);
+
+        let count = *count as usize;
+        if count > list.len() {
+            return Err(InterpreterError::NativeFunctionError(
+                "drop: Count is greater than list length.",
+                range,
+            ));
+        }
+
+        let result = list[count..list.len()].to_vec().into();
+
+        Ok(Value::List(result).into())
+    }
+
+    pub fn std_enumerate(args: Vec<Arc<Value>>, range: Range) -> IResult {
         native_arg_count!("enum"; args == 1; range);
 
         let expr = native_arg!("enum"; args @ 0; range);
@@ -448,10 +530,10 @@ impl StdLib {
         match expr.borrow() {
             Value::String(value) => {
                 for (i, c) in value.chars().enumerate() {
-                    result.push(Rc::new(Value::List(
+                    result.push(Arc::new(Value::List(
                         vec![
-                            Rc::new(Value::Number(i as f64)),
-                            Rc::new(Value::String(EcoString::from(c))),
+                            Arc::new(Value::Number(i as f64)),
+                            Arc::new(Value::String(EcoString::from(c))),
                         ]
                         .into(),
                     )));
@@ -459,17 +541,17 @@ impl StdLib {
             }
             Value::List(value) => {
                 for (i, item) in value.iter().enumerate() {
-                    result.push(Rc::new(Value::List(
-                        vec![Rc::new(Value::Number(i as f64)), item.clone()].into(),
+                    result.push(Arc::new(Value::List(
+                        vec![Arc::new(Value::Number(i as f64)), item.clone()].into(),
                     )));
                 }
             }
             Value::Record(value) => {
                 for (i, (key, value)) in value.iter().enumerate() {
-                    result.push(Rc::new(Value::List(
+                    result.push(Arc::new(Value::List(
                         vec![
-                            Rc::new(Value::Number(i as f64)),
-                            Rc::new(Value::String(key.clone())),
+                            Arc::new(Value::Number(i as f64)),
+                            Arc::new(Value::String(key.clone())),
                             value.clone(),
                         ]
                         .into(),
@@ -487,7 +569,7 @@ impl StdLib {
         Ok(Value::List(result.into()).into())
     }
 
-    pub fn std_map(args: Vec<Rc<Value>>, range: Range) -> IResult {
+    pub fn std_map(args: Vec<Arc<Value>>, range: Range) -> IResult {
         native_arg_count!("map"; args == 2; range);
 
         let list = native_arg!("map"; args @ 0; range);
@@ -498,14 +580,15 @@ impl StdLib {
         match list.borrow() {
             Value::List(items) => {
                 for item in items.iter() {
-                    let value = closure.call(vec![item.clone()], None)?;
+                    let value = closure.call(None, vec![item.clone()], None)?;
                     result.push(value);
                 }
             }
             Value::Record(items) => {
                 for (key, value) in items.iter() {
                     let value = closure.call(
-                        vec![Rc::new(Value::String(key.clone())), value.clone()].into(),
+                        None,
+                        vec![Arc::new(Value::String(key.clone())), value.clone()].into(),
                         None,
                     )?;
                     result.push(value);
@@ -522,22 +605,22 @@ impl StdLib {
         Ok(Value::List(result.into()).into())
     }
 
-    pub fn std_list(args: Vec<Rc<Value>>, range: Range) -> IResult {
+    pub fn std_list(args: Vec<Arc<Value>>, range: Range) -> IResult {
         native_arg_count!("list"; args == 1; range);
 
         let record = native_arg!("list"; args @ 0 => Record @ range);
 
         let mut result = Vec::new();
         for (key, value) in record.iter() {
-            result.push(Rc::new(Value::List(
-                vec![Rc::new(Value::String(key.clone())), value.clone()].into(),
+            result.push(Arc::new(Value::List(
+                vec![Arc::new(Value::String(key.clone())), value.clone()].into(),
             )));
         }
 
         Ok(Value::List(result.into()).into())
     }
 
-    pub fn std_record(args: Vec<Rc<Value>>, range: Range) -> IResult {
+    pub fn std_record(args: Vec<Arc<Value>>, range: Range) -> IResult {
         native_arg_count!("record"; args == 1; range);
 
         let list = native_arg!("record"; args @ 0 => List @ range);
@@ -589,7 +672,7 @@ impl StdLib {
         Ok(Value::Record(result.into()).into())
     }
 
-    pub fn std_zip(args: Vec<Rc<Value>>, range: Range) -> IResult {
+    pub fn std_zip(args: Vec<Arc<Value>>, range: Range) -> IResult {
         native_arg_count!("zip"; args == 2; range);
 
         let list_a = native_arg!("zip"; args @ 0 => List @ range);
@@ -603,7 +686,7 @@ impl StdLib {
         Ok(Value::List(result.into()).into())
     }
 
-    pub fn std_filter(args: Vec<Rc<Value>>, range: Range) -> IResult {
+    pub fn std_filter(args: Vec<Arc<Value>>, range: Range) -> IResult {
         native_arg_count!("filter"; args == 2; range);
 
         let list = native_arg!("filter"; args @ 0 => List @ range);
@@ -611,7 +694,7 @@ impl StdLib {
 
         let mut result = Vec::new();
         for item in list.iter() {
-            let value = predicate.call(vec![item.clone()], None)?;
+            let value = predicate.call(None, vec![item.clone()], None)?;
             match value.borrow() {
                 Value::Boolean(value) => {
                     if *value {
@@ -631,7 +714,7 @@ impl StdLib {
         Ok(Value::List(result.into()).into())
     }
 
-    pub fn std_has(args: Vec<Rc<Value>>, range: Range) -> IResult {
+    pub fn std_has(args: Vec<Arc<Value>>, range: Range) -> IResult {
         native_arg_count!("has"; args == 2; range);
 
         let collection = native_arg!("has"; args @ 0; range);
@@ -679,7 +762,7 @@ impl StdLib {
     }
 
     // LLM
-    pub fn std_gen(args: Vec<Rc<Value>>, range: Range) -> IResult {
+    pub fn std_gen(args: Vec<Arc<Value>>, range: Range) -> IResult {
         native_arg_count!("gen"; args == 2; range);
 
         let prompt = native_arg!("gen"; args @ 0 => String @ range);

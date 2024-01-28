@@ -94,7 +94,7 @@ fn main() {
     let start = Instant::now();
 
     let mut environment = Environment::new();
-    environment.load_stdlib();
+    // environment.load_stdlib();
 
     let result = ast.eval(&mut environment);
     if let Err(err) = result {

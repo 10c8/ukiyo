@@ -1,9 +1,10 @@
 mod stdlib;
 
-use std::{borrow::Borrow, rc::Rc};
+use std::{borrow::Borrow, sync::Arc};
 
 use codespan_reporting::diagnostic::{Diagnostic, Label};
 use ecow::EcoString;
+use once_cell::sync::Lazy;
 use rustc_hash::FxHashMap;
 
 use crate::{
@@ -14,17 +15,17 @@ use stdlib::StdLib;
 
 static UNDERLINE: &str = "_";
 
-type IResult = Result<Rc<Value>, InterpreterError>;
+type IResult = Result<Arc<Value>, InterpreterError>;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Value {
     Boolean(bool),
     String(EcoString),
     Number(f64),
-    List(Rc<[Rc<Value>]>),
-    Record(FxHashMap<EcoString, Rc<Value>>),
+    List(Arc<[Arc<Value>]>),
+    Record(FxHashMap<EcoString, Arc<Value>>),
     Closure(Closure),
-    NativeFunction(fn(Vec<Rc<Value>>, Range) -> IResult),
+    NativeFunction(fn(Vec<Arc<Value>>, Range) -> IResult),
     Any,
     Nil,
 }
@@ -82,7 +83,7 @@ macro_rules! native_fn {
     ($name:literal; $self:ident: $fn:expr) => {
         $self
             .values
-            .insert($name.into(), (Rc::new(Value::NativeFunction($fn)), (0, 0)));
+            .insert($name.into(), (Arc::new(Value::NativeFunction($fn)), (0, 0)));
     };
 }
 
@@ -91,6 +92,7 @@ macro_rules! native_arg_count {
     ($name:literal; $args:ident == $count:expr; $range:expr) => {
         if $args.len() != $count {
             return Err(InterpreterError::NativeFunctionWrongArgumentCount(
+                $name,
                 $range,
                 $count,
                 $args.len(),
@@ -139,7 +141,7 @@ macro_rules! native_arg {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Environment {
-    values: FxHashMap<EcoString, (Rc<Value>, Range)>,
+    values: FxHashMap<EcoString, (Arc<Value>, Range)>,
 }
 
 impl Environment {
@@ -153,14 +155,20 @@ impl Environment {
         StdLib::load(self);
     }
 
-    pub fn get(&self, name: &str) -> Option<&(Rc<Value>, Range)> {
+    pub fn get(&self, name: &str) -> Option<&(Arc<Value>, Range)> {
         self.values.get(name)
     }
 
-    pub fn set(&mut self, name: &str, value: Rc<Value>, range: Range) {
+    pub fn set(&mut self, name: &str, value: Arc<Value>, range: Range) {
         self.values.insert(name.into(), (value, range));
     }
 }
+
+static GLOBAL_ENV: Lazy<Environment> = Lazy::new(|| {
+    let mut env = Environment::new();
+    env.load_stdlib();
+    env
+});
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Closure {
@@ -171,7 +179,12 @@ pub struct Closure {
 }
 
 impl Closure {
-    pub fn call(&self, args: Vec<Rc<Value>>, caller_range: Option<Range>) -> IResult {
+    pub fn call(
+        &self,
+        id: Option<&EcoString>,
+        args: Vec<Arc<Value>>,
+        caller_range: Option<Range>,
+    ) -> IResult {
         if self.params.len() != args.len() {
             let caller_range = caller_range.unwrap_or(self.range);
             let callee_range = if caller_range == self.range {
@@ -188,12 +201,19 @@ impl Closure {
             ));
         }
 
-        let mut env = self.env.clone();
+        let mut environment = self.env.clone();
+
         for (name, arg) in self.params.iter().zip(args.iter()) {
-            env.set(name, arg.clone(), self.body.range());
+            environment.set(name, arg.clone(), self.body.range());
         }
 
-        self.body.eval(&mut env)
+        if let Some(id) = id {
+            if !environment.values.contains_key(id) {
+                environment.set(&id, Arc::new(Value::Closure(self.clone())), self.range);
+            }
+        }
+
+        self.body.eval(&mut environment)
     }
 }
 
@@ -203,7 +223,7 @@ type Range = (usize, usize);
 pub enum InterpreterError {
     UndefinedVariable(EcoString, Range),
     NotCallable(AstNode, Range),
-    NotIterable(Rc<Value>, Range),
+    NotIterable(Arc<Value>, Range),
     IndexOutOfBounds(&'static str, Range, i64, usize),
     InvalidKey(EcoString, Range),
     WrongArgumentCount(Range, Option<Range>, usize, usize),
@@ -214,7 +234,7 @@ pub enum InterpreterError {
     InvalidFunctionParam(Range),
     InvalidRecordKey(Range),
     NativeFunctionError(&'static str, Range),
-    NativeFunctionWrongArgumentCount(Range, usize, usize),
+    NativeFunctionWrongArgumentCount(&'static str, Range, usize, usize),
     NativeFunctionInvalidArgument(Range, usize, String, &'static str),
     StringFormatError(
         usize,
@@ -338,10 +358,10 @@ impl ToDiagnostic for InterpreterError {
                 .with_code("run")
                 .with_message(*message)
                 .with_labels(vec![Label::primary(0, range.0..range.1)]),
-            InterpreterError::NativeFunctionWrongArgumentCount(range, expected, got) => {
+            InterpreterError::NativeFunctionWrongArgumentCount(name, range, expected, got) => {
                 Diagnostic::error()
                     .with_code("run")
-                    .with_message("Wrong number of arguments.")
+                    .with_message(format!("{}: Wrong number of arguments.", name))
                     .with_labels(vec![Label::primary(0, range.0..range.1)])
                     .with_notes(vec![format!(
                         "Expected {} {}, got {}.",
@@ -419,11 +439,21 @@ impl ToDiagnostic for InterpreterError {
     }
 }
 
+fn env_get(env: &Environment, name: &str) -> Option<(Arc<Value>, Range)> {
+    if let Some((value, range)) = env.get(name) {
+        Some((value.clone(), *range))
+    } else {
+        GLOBAL_ENV
+            .get(name)
+            .map(|(value, range)| (value.clone(), *range))
+    }
+}
+
 impl AstNode {
     pub fn eval(&self, environment: &mut Environment) -> IResult {
         match self {
             AstNode::Prog { body, .. } | AstNode::Block { body, .. } => {
-                let mut result = Rc::new(Value::Nil);
+                let mut result = Arc::new(Value::Nil);
                 for node in body {
                     result = node.eval(environment)?;
                 }
@@ -442,10 +472,12 @@ impl AstNode {
                         if *name == UNDERLINE {
                             return Err(InterpreterError::InvalidFunctionName(id_node.range()));
                         } else {
-                            if let Some((_, range)) = environment.get(name) {
+                            if let Some((_, range)) = env_get(environment, name) {
+                                let range = if range == (0, 0) { None } else { Some(range) };
+
                                 return Err(InterpreterError::FunctionRedeclaration(
                                     name.clone(),
-                                    Some(*range),
+                                    range,
                                     id_node.range(),
                                 ));
                             }
@@ -479,14 +511,14 @@ impl AstNode {
 
                 let value = if *is_const {
                     // TODO: Make it lazy
-                    closure.call(vec![], None)?
+                    closure.call(None, vec![], None)?
                 } else {
-                    Rc::new(Value::Closure(closure))
+                    Arc::new(Value::Closure(closure))
                 };
 
                 environment.set(id, value, id_node.as_ref().range());
 
-                Ok(Rc::new(Value::Nil))
+                Ok(Arc::new(Value::Nil))
             }
             AstNode::FuncRef { id: id_node, .. } => {
                 let id = match id_node.as_ref() {
@@ -494,7 +526,7 @@ impl AstNode {
                     _ => unreachable!(),
                 };
 
-                if let Some((value, _)) = environment.get(id) {
+                if let Some((value, _)) = env_get(environment, id) {
                     Ok(value.clone())
                 } else {
                     return Err(InterpreterError::UndefinedVariable(
@@ -529,7 +561,7 @@ impl AstNode {
                     env: environment.clone(),
                 };
 
-                Ok(Rc::new(Value::Closure(closure)))
+                Ok(Arc::new(Value::Closure(closure)))
             }
             AstNode::Case { expr, cases, .. } => {
                 let case_expr = expr.eval(environment)?;
@@ -556,7 +588,7 @@ impl AstNode {
                                     env: environment.clone(),
                                 };
 
-                                let result = closure.call(vec![case_expr], None)?;
+                                let result = closure.call(None, vec![case_expr], None)?;
                                 return Ok(result);
                             }
                             CasePatternKind::Literal => {
@@ -573,7 +605,7 @@ impl AstNode {
                     }
                 }
 
-                Ok(Rc::new(Value::Nil))
+                Ok(Arc::new(Value::Nil))
             }
             AstNode::FuncCall {
                 callee,
@@ -590,14 +622,19 @@ impl AstNode {
                     AstNode::Ident { .. } | AstNode::FuncRef { .. } => {
                         callee.call(args, environment)
                     }
-                    AstNode::FuncCall { .. } => {
+                    AstNode::FuncCall { .. } | AstNode::Lambda { .. } => {
                         let closure = callee.eval(environment)?;
                         match closure.borrow() {
                             Value::Closure(closure) => {
-                                let result = closure.call(args, Some(self.range()))?;
+                                let result = closure.call(None, args, Some(self.range()))?;
                                 return Ok(result);
                             }
-                            _ => unreachable!(),
+                            _ => {
+                                return Err(InterpreterError::NotCallable(
+                                    *callee.clone(),
+                                    callee.range(),
+                                ));
+                            }
                         }
                     }
                     _ => {
@@ -608,7 +645,7 @@ impl AstNode {
                     }
                 }
             }
-            AstNode::Indexing {
+            AstNode::IndexingOp {
                 expr: expr_node,
                 index: index_node,
                 ..
@@ -637,7 +674,7 @@ impl AstNode {
                         }
 
                         let value = if index < 0 {
-                            Rc::new(Value::String(
+                            Arc::new(Value::String(
                                 value
                                     .chars()
                                     .nth(value.len() - index as usize)
@@ -645,7 +682,7 @@ impl AstNode {
                                     .into(),
                             ))
                         } else {
-                            Rc::new(Value::String(
+                            Arc::new(Value::String(
                                 value.chars().nth(index as usize).unwrap().into(),
                             ))
                         };
@@ -703,6 +740,49 @@ impl AstNode {
                     }
                 }
             }
+            AstNode::ConcatOp {
+                left: left_node,
+                right: right_node,
+                ..
+            } => {
+                let left = left_node.eval(environment)?;
+                let right = right_node.eval(environment)?;
+
+                if typeof_value(&left) != typeof_value(&right) {
+                    return Err(InterpreterError::TypeMismatch(
+                        self.range(),
+                        typeof_value(&left),
+                        typeof_value(&right),
+                    ));
+                }
+
+                match left.borrow() {
+                    Value::String(left) => {
+                        let right = match right.borrow() {
+                            Value::String(right) => right,
+                            _ => unreachable!(),
+                        };
+
+                        let mut result = left.clone();
+                        result.push_str(right);
+
+                        Ok(Arc::new(Value::String(result)))
+                    }
+                    Value::List(left) => {
+                        let right = match right.borrow() {
+                            Value::List(right) => right,
+                            _ => unreachable!(),
+                        };
+
+                        let mut result = Vec::new();
+                        result.extend_from_slice(left);
+                        result.extend_from_slice(right);
+
+                        Ok(Arc::new(Value::List(result.into())))
+                    }
+                    _ => unreachable!(),
+                }
+            }
             AstNode::IterationOp {
                 id,
                 expr: expr_node,
@@ -728,7 +808,7 @@ impl AstNode {
                     Value::List(items) => {
                         let mut result = Vec::new();
                         for item in items.iter() {
-                            let value = closure.call(vec![item.clone()], None)?;
+                            let value = closure.call(None, vec![item.clone()], None)?;
                             result.push(value);
                         }
 
@@ -737,8 +817,11 @@ impl AstNode {
                     Value::String(value) => {
                         let mut result = Vec::new();
                         for item in value.chars() {
-                            let value =
-                                closure.call(vec![Rc::new(Value::String(item.into()))], None)?;
+                            let value = closure.call(
+                                None,
+                                vec![Arc::new(Value::String(item.into()))],
+                                None,
+                            )?;
                             result.push(value);
                         }
 
@@ -752,7 +835,7 @@ impl AstNode {
                 }
             }
             AstNode::Ident { .. } => self.call(vec![], environment),
-            AstNode::BoolLit { value, .. } => Ok(Rc::new(Value::Boolean(*value))),
+            AstNode::BoolLit { value, .. } => Ok(Arc::new(Value::Boolean(*value))),
             AstNode::StrLit {
                 value,
                 is_format,
@@ -760,12 +843,12 @@ impl AstNode {
             } => {
                 if *is_format {
                     let result = eval_format_string(value, environment, *range)?;
-                    Ok(Rc::new(result))
+                    Ok(Arc::new(result))
                 } else {
-                    Ok(Rc::new(Value::String(value.clone().into())))
+                    Ok(Arc::new(Value::String(value.clone().into())))
                 }
             }
-            AstNode::NumLit { value, .. } => Ok(Rc::new(Value::Number(*value))),
+            AstNode::NumLit { value, .. } => Ok(Arc::new(Value::Number(*value))),
             AstNode::Regex { .. } => todo!("regex"), // TODO: eval regex
             AstNode::List {
                 items: item_list, ..
@@ -776,7 +859,7 @@ impl AstNode {
                     items.push(value);
                 }
 
-                Ok(Rc::new(Value::List(items.into())))
+                Ok(Arc::new(Value::List(items.into())))
             }
             AstNode::Record { keys, values, .. } => {
                 let mut record = FxHashMap::default();
@@ -801,7 +884,7 @@ impl AstNode {
                     record.insert(key, value);
                 }
 
-                Ok(Rc::new(Value::Record(record)))
+                Ok(Arc::new(Value::Record(record)))
             }
             AstNode::Range {
                 mode,
@@ -829,29 +912,47 @@ impl AstNode {
                     ))?,
                 };
 
+                let is_rev = start > end;
+
                 // TODO: Make it lazy
                 let mut result = Vec::new();
 
                 match mode {
                     RangeMode::Inclusive => {
-                        for i in start..=end {
-                            result.push(Rc::new(Value::Number(i as f64)));
+                        let range = std::cmp::min(start, end)..=std::cmp::max(start, end);
+
+                        if is_rev {
+                            for i in range.rev() {
+                                result.push(Arc::new(Value::Number(i as f64)));
+                            }
+                        } else {
+                            for i in range {
+                                result.push(Arc::new(Value::Number(i as f64)));
+                            }
                         }
                     }
                     RangeMode::Exclusive => {
-                        for i in start..end {
-                            result.push(Rc::new(Value::Number(i as f64)));
+                        let range = std::cmp::min(start, end)..std::cmp::max(start, end);
+
+                        if is_rev {
+                            for i in range.rev() {
+                                result.push(Arc::new(Value::Number(i as f64)));
+                            }
+                        } else {
+                            for i in range {
+                                result.push(Arc::new(Value::Number(i as f64)));
+                            }
                         }
                     }
                 }
 
-                Ok(Rc::new(Value::List(result.into())))
+                Ok(Arc::new(Value::List(result.into())))
             }
             _ => unreachable!("eval: {:#?}", self),
         }
     }
 
-    pub fn call(&self, args: Vec<Rc<Value>>, environment: &mut Environment) -> IResult {
+    pub fn call(&self, args: Vec<Arc<Value>>, environment: &mut Environment) -> IResult {
         match self {
             AstNode::Ident { name, range } => {
                 if *name == UNDERLINE {
@@ -862,27 +963,33 @@ impl AstNode {
                     return Ok(Value::Any.into());
                 }
 
-                if let Some((value, _)) = environment.get(name) {
-                    match value.borrow() {
-                        Value::Closure(closure) => {
-                            let result = closure.call(args, Some(*range))?;
-                            return Ok(result);
-                        }
-                        Value::NativeFunction(method) => {
-                            let result = method(args, *range)?;
-                            return Ok(result);
-                        }
-                        _ => {
-                            if args.len() != 0 {
-                                return Err(InterpreterError::NotCallable(self.clone(), *range));
-                            }
+                let value = match env_get(environment, name) {
+                    Some((value, _)) => value.clone(),
+                    None => {
+                        return Err(InterpreterError::UndefinedVariable(
+                            name.clone(),
+                            self.range(),
+                        ));
+                    }
+                };
+
+                match value.borrow() {
+                    Value::Closure(closure) => {
+                        let result = closure.call(Some(name), args, Some(*range))?;
+                        return Ok(result);
+                    }
+                    Value::NativeFunction(method) => {
+                        let result = method(args, *range)?;
+                        return Ok(result);
+                    }
+                    _ => {
+                        if args.len() != 0 {
+                            return Err(InterpreterError::NotCallable(self.clone(), *range));
                         }
                     }
-
-                    return Ok(value.clone());
-                } else {
-                    return Err(InterpreterError::UndefinedVariable(name.clone(), *range));
                 }
+
+                Ok(value.clone())
             }
             AstNode::FuncRef { id: id_node, range } => {
                 let id = match id_node.as_ref() {
@@ -890,33 +997,36 @@ impl AstNode {
                     _ => unreachable!(),
                 };
 
-                if let Some((value, _)) = environment.get(id) {
-                    match value.borrow() {
-                        Value::Closure(closure) => {
-                            let result = closure.call(args, Some(*range))?;
-                            return Ok(result);
-                        }
-                        Value::NativeFunction(method) => {
-                            let result = method(args, id_node.range())?;
-                            return Ok(result);
-                        }
-                        _ => {
-                            if args.len() != 0 {
-                                return Err(InterpreterError::NotCallable(
-                                    self.clone(),
-                                    id_node.range(),
-                                ));
-                            }
+                let value = match env_get(environment, id) {
+                    Some((value, _)) => value.clone(),
+                    None => {
+                        return Err(InterpreterError::UndefinedVariable(
+                            id.clone(),
+                            id_node.range(),
+                        ));
+                    }
+                };
+
+                match value.borrow() {
+                    Value::Closure(closure) => {
+                        let result = closure.call(Some(id), args, Some(*range))?;
+                        return Ok(result);
+                    }
+                    Value::NativeFunction(method) => {
+                        let result = method(args, id_node.range())?;
+                        return Ok(result);
+                    }
+                    _ => {
+                        if args.len() != 0 {
+                            return Err(InterpreterError::NotCallable(
+                                self.clone(),
+                                id_node.range(),
+                            ));
                         }
                     }
-
-                    return Ok(value.clone());
-                } else {
-                    return Err(InterpreterError::UndefinedVariable(
-                        id.clone(),
-                        id_node.range(),
-                    ));
                 }
+
+                Ok(value.clone())
             }
             _ => todo!("call: {:#?}", self),
         }

@@ -70,6 +70,10 @@ pub enum Token {
         mode: RangeMode,
         span: Span,
     },
+    ConcatOperator {
+        // ++
+        span: Span,
+    },
     AssignmentArrow {
         // ->
         span: Span,
@@ -109,6 +113,7 @@ impl Token {
             | Token::Number { span, .. }
             | Token::Symbol { span, .. }
             | Token::RangeOperator { span, .. }
+            | Token::ConcatOperator { span, .. }
             | Token::AssignmentArrow { span, .. }
             // | Token::ApplicationArrow { span, .. }
             | Token::MatchArrow { span, .. }
@@ -130,6 +135,7 @@ impl std::fmt::Display for Token {
             Token::Number { .. } => write!(f, "number"),
             Token::Symbol { value, .. } => write!(f, "`{}`", value),
             Token::RangeOperator { .. } => write!(f, "range"),
+            Token::ConcatOperator { .. } => write!(f, "`++`"),
             Token::AssignmentArrow { .. } => write!(f, "`->`"),
             // Token::ApplicationArrow { .. } => write!(f, "`|>`"),
             Token::MatchArrow { .. } => write!(f, "`=>`"),
@@ -351,6 +357,25 @@ impl Lexer {
                     };
                     tokens.push(token);
                 }
+                // Concatenation Operator
+                '+' => {
+                    self.scanner.next();
+
+                    if self.scanner.try_consume('+') {
+                        tokens.push(Token::ConcatOperator {
+                            span: Span {
+                                line,
+                                column,
+                                range: (span_start, self.scanner.cursor()),
+                            },
+                        });
+                    } else {
+                        return Err(LexError::UnexpectedChar(
+                            "concatenation operator",
+                            self.scanner.cursor(),
+                        ));
+                    }
+                }
                 // Assignment Arrow
                 '-' => {
                     self.scanner.next();
@@ -531,7 +556,7 @@ impl Lexer {
                                         spaces += 1;
                                     }
 
-                                    if spaces < last_indent {
+                                    if spaces > 0 && spaces < last_indent {
                                         return Err(LexError::UnexpectedIndent(
                                             spaces,
                                             self.scanner.cursor(),
