@@ -580,14 +580,13 @@ impl StdLib {
         match list.borrow() {
             Value::List(items) => {
                 for item in items.iter() {
-                    let value = closure.call(None, vec![item.clone()], None)?;
+                    let value = closure.call(vec![item.clone()], None)?;
                     result.push(value);
                 }
             }
             Value::Record(items) => {
                 for (key, value) in items.iter() {
                     let value = closure.call(
-                        None,
                         vec![Arc::new(Value::String(key.clone())), value.clone()].into(),
                         None,
                     )?;
@@ -694,7 +693,7 @@ impl StdLib {
 
         let mut result = Vec::new();
         for item in list.iter() {
-            let value = predicate.call(None, vec![item.clone()], None)?;
+            let value = predicate.call(vec![item.clone()], None)?;
             match value.borrow() {
                 Value::Boolean(value) => {
                     if *value {

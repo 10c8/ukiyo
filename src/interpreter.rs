@@ -172,6 +172,7 @@ static GLOBAL_ENV: Lazy<Environment> = Lazy::new(|| {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Closure {
+    id: Option<EcoString>,
     params: Vec<EcoString>,
     body: AstNode,
     range: Range,
@@ -179,12 +180,7 @@ pub struct Closure {
 }
 
 impl Closure {
-    pub fn call(
-        &self,
-        id: Option<&EcoString>,
-        args: Vec<Arc<Value>>,
-        caller_range: Option<Range>,
-    ) -> IResult {
+    pub fn call(&self, args: Vec<Arc<Value>>, caller_range: Option<Range>) -> IResult {
         if self.params.len() != args.len() {
             let caller_range = caller_range.unwrap_or(self.range);
             let callee_range = if caller_range == self.range {
@@ -207,7 +203,7 @@ impl Closure {
             environment.set(name, arg.clone(), self.body.range());
         }
 
-        if let Some(id) = id {
+        if let Some(ref id) = self.id {
             if !environment.values.contains_key(id) {
                 environment.set(&id, Arc::new(Value::Closure(self.clone())), self.range);
             }
@@ -503,6 +499,7 @@ impl AstNode {
                 }
 
                 let closure = Closure {
+                    id: if !is_const { Some(id.clone()) } else { None },
                     params,
                     body: *body.clone(),
                     range: id_range,
@@ -511,7 +508,7 @@ impl AstNode {
 
                 let value = if *is_const {
                     // TODO: Make it lazy
-                    closure.call(None, vec![], None)?
+                    closure.call(vec![], None)?
                 } else {
                     Arc::new(Value::Closure(closure))
                 };
@@ -555,6 +552,7 @@ impl AstNode {
                 }
 
                 let closure = Closure {
+                    id: None,
                     params,
                     body: *body.clone(),
                     range: *range,
@@ -582,13 +580,14 @@ impl AstNode {
                                 };
 
                                 let closure = Closure {
+                                    id: None,
                                     params: vec![test_name.clone()],
                                     body: *body.clone(),
                                     range: body.range(),
                                     env: environment.clone(),
                                 };
 
-                                let result = closure.call(None, vec![case_expr], None)?;
+                                let result = closure.call(vec![case_expr], None)?;
                                 return Ok(result);
                             }
                             CasePatternKind::Literal => {
@@ -626,7 +625,7 @@ impl AstNode {
                         let closure = callee.eval(environment)?;
                         match closure.borrow() {
                             Value::Closure(closure) => {
-                                let result = closure.call(None, args, Some(self.range()))?;
+                                let result = closure.call(args, Some(self.range()))?;
                                 return Ok(result);
                             }
                             _ => {
@@ -796,6 +795,7 @@ impl AstNode {
 
                 let env = environment.clone();
                 let closure = Closure {
+                    id: None,
                     params: vec![id.clone()],
                     body: body.as_ref().clone(),
                     range: body.range(),
@@ -808,7 +808,7 @@ impl AstNode {
                     Value::List(items) => {
                         let mut result = Vec::new();
                         for item in items.iter() {
-                            let value = closure.call(None, vec![item.clone()], None)?;
+                            let value = closure.call(vec![item.clone()], None)?;
                             result.push(value);
                         }
 
@@ -817,11 +817,8 @@ impl AstNode {
                     Value::String(value) => {
                         let mut result = Vec::new();
                         for item in value.chars() {
-                            let value = closure.call(
-                                None,
-                                vec![Arc::new(Value::String(item.into()))],
-                                None,
-                            )?;
+                            let value =
+                                closure.call(vec![Arc::new(Value::String(item.into()))], None)?;
                             result.push(value);
                         }
 
@@ -975,7 +972,7 @@ impl AstNode {
 
                 match value.borrow() {
                     Value::Closure(closure) => {
-                        let result = closure.call(Some(name), args, Some(*range))?;
+                        let result = closure.call(args, Some(*range))?;
                         return Ok(result);
                     }
                     Value::NativeFunction(method) => {
@@ -1009,7 +1006,7 @@ impl AstNode {
 
                 match value.borrow() {
                     Value::Closure(closure) => {
-                        let result = closure.call(Some(id), args, Some(*range))?;
+                        let result = closure.call(args, Some(*range))?;
                         return Ok(result);
                     }
                     Value::NativeFunction(method) => {
