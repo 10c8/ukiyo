@@ -1,20 +1,18 @@
-use codespan_reporting::{
-    diagnostic::{Diagnostic, Label},
-    files::SimpleFiles,
-    term::termcolor::{ColorChoice, StandardStream},
-    term::{self, Config},
-};
+use codespan_reporting::diagnostic::{Diagnostic, Label};
 use ecow::{EcoString, EcoVec};
 
 use crate::lexer::*;
+
+static UNDERLINE: &str = "_";
 
 type Range = (usize, usize);
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum CasePatternKind {
     Any,
-    Expr,
-    Or,
+    Ident,
+    Literal,
+    // Or,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -32,10 +30,14 @@ pub enum AstNode {
         range: Range,
     },
     FuncDecl {
-        id: Option<Box<AstNode>>,
+        id: Box<AstNode>,
         is_const: bool,
         params: EcoVec<AstNode>,
         body: Box<AstNode>,
+        range: Range,
+    },
+    FuncRef {
+        id: Box<AstNode>,
         range: Range,
     },
     Lambda {
@@ -58,14 +60,14 @@ pub enum AstNode {
         expr: Box<AstNode>,
         range: Range,
     },
-    // TODO: Refactor case patterns to allow for captures
-    // CasePatternCapture {
-    //     name: String,
-    //     range: Range,
-    // },
     FuncCall {
         callee: Box<AstNode>,
         args: EcoVec<AstNode>,
+        range: Range,
+    },
+    Indexing {
+        expr: Box<AstNode>,
+        index: Box<AstNode>,
         range: Range,
     },
     IterationOp {
@@ -76,6 +78,10 @@ pub enum AstNode {
     },
     Ident {
         name: EcoString,
+        range: Range,
+    },
+    BoolLit {
+        value: bool,
         range: Range,
     },
     StrLit {
@@ -121,14 +127,16 @@ impl AstNode {
             | AstNode::ExprStmt { range, .. }
             | AstNode::Block { range, .. }
             | AstNode::FuncDecl { range, .. }
+            | AstNode::FuncRef { range, .. }
             | AstNode::Lambda { range, .. }
             | AstNode::Case { range, .. }
             | AstNode::CaseBranch { range, .. }
             | AstNode::CasePattern { range, .. }
-            // | AstNode::CasePatternCapture { range, .. }
             | AstNode::FuncCall { range, .. }
+            | AstNode::Indexing { range, .. }
             | AstNode::IterationOp { range, .. }
             | AstNode::Ident { range, .. }
+            | AstNode::BoolLit { range, .. }
             | AstNode::StrLit { range, .. }
             | AstNode::Regex { range, .. }
             | AstNode::NumLit { range, .. }
@@ -385,7 +393,7 @@ impl Parser {
         Ok(program)
     }
 
-    pub fn display_error(&mut self, files: SimpleFiles<&str, &String>, error: ParseError) {
+    pub fn error_to_diagnostic(&mut self, error: ParseError) -> Diagnostic<usize> {
         let tok;
         let span;
         let err;
@@ -403,21 +411,15 @@ impl Parser {
             }
         }
 
-        let writer = StandardStream::stderr(ColorChoice::Auto);
-        let config = Config::default();
-
         match tok {
             Token::EOF { span } => {
-                let diagnostic = Diagnostic::error()
+                return Diagnostic::error()
                     .with_message("Parsing Error: Unexpected end of file.")
                     .with_labels(vec![Label::primary(0, span.range.0..span.range.1)]);
-
-                term::emit(&mut writer.lock(), &config, &files, &diagnostic).unwrap();
-                return;
             }
             Token::Indent { size, span } | Token::Dedent { size, span } => match err {
                 ParseError::Unexpected { .. } | ParseError::Fail => {
-                    let diagnostic = Diagnostic::error()
+                    return Diagnostic::error()
                         .with_code("parse")
                         .with_message("Wrong indentation.")
                         .with_labels(vec![Label::primary(0, span.range.0..span.range.1)])
@@ -426,16 +428,13 @@ impl Parser {
                             self.indent_stack.last().unwrap_or(&0),
                             size
                         )]);
-
-                    term::emit(&mut writer.lock(), &config, &files, &diagnostic).unwrap();
-                    return;
                 }
                 _ => {}
             },
             _ => {}
         }
 
-        let diagnostic = match err {
+        match err {
             ParseError::Fail => Diagnostic::error()
                 .with_code("parse")
                 .with_message(format!("Unexpected {}.", tok.to_string()))
@@ -490,9 +489,7 @@ impl Parser {
                     size
                 )]),
             _ => unreachable!("unrecoverable error"),
-        };
-
-        term::emit(&mut writer.lock(), &config, &files, &diagnostic).unwrap();
+        }
     }
 
     fn set_cut_error(&mut self, err: Option<ParseError>) {
@@ -589,7 +586,8 @@ impl Parser {
 
     fn parse_expr_stmt(&mut self) -> PResult {
         let expr = any! {
-            self: parse_iteration_op, "iterator"
+            self: parse_indexing, "indexing"
+                | parse_iteration_op, "iterator"
                 | parse_func_call, "function call"
                 | parse_expr, "expression"
         }?;
@@ -635,39 +633,37 @@ impl Parser {
     fn parse_func_decl(&mut self) -> PResult {
         let const_marker = opt!(self: Token::Keyword { name: Keyword::Const, .. });
 
-        let anon_marker = opt!(self: Token::Symbol { value: '\\', .. });
+        let anon_marker = peek!(0, self: Token::Symbol { value: '!', .. });
 
-        if const_marker.is_some() && anon_marker.is_some() {
-            let org_span = const_marker.unwrap().span();
-            let culprit = Token::Keyword {
-                name: Keyword::Const,
-                span: Span {
-                    line: org_span.line,
-                    column: org_span.column,
-                    range: (org_span.range.0, anon_marker.unwrap().span().range.1),
-                },
-            };
+        if anon_marker.is_some() {
+            if const_marker.is_some() {
+                let org_span = const_marker.unwrap().span();
+                let culprit = Token::Keyword {
+                    name: Keyword::Const,
+                    span: Span {
+                        line: org_span.line,
+                        column: org_span.column,
+                        range: (org_span.range.0, anon_marker.unwrap().span().range.1),
+                    },
+                };
 
-            return Err(ParseError::Cut(
-                Box::new(ParseError::Forbidden(
-                    "An anonymous function cannot be constant.",
-                )),
-                culprit,
-            ));
+                return Err(ParseError::Cut(
+                    Box::new(ParseError::Forbidden(
+                        "An anonymous function cannot be constant.",
+                    )),
+                    culprit,
+                ));
+            } else {
+                return self.parse_lambda();
+            }
         }
 
-        let range_start;
-        let id = match anon_marker {
-            Some(Token::Symbol { span, .. }) => {
-                range_start = span.range.0;
-                None
-            }
-            None => {
-                range_start = self.lexer.peek().span().range.0;
-                Some(self.parse_identifier()?)
-            }
-            _ => unreachable!(),
-        };
+        let range_start = const_marker
+            .as_ref()
+            .map(|tok| tok.span().range.0)
+            .unwrap_or_else(|| self.lexer.peek().span().range.0);
+
+        let id = self.parse_identifier()?;
 
         let params = many!(0.., self: parse_identifier)?;
 
@@ -684,7 +680,7 @@ impl Parser {
 
             return Err(ParseError::Cut(
                 Box::new(ParseError::Forbidden(
-                    "A function with parameters cannot be constant.",
+                    "A constant function cannot have parameters.",
                 )),
                 culprit,
             ));
@@ -692,34 +688,48 @@ impl Parser {
 
         token!("`->`"; self: Token::AssignmentArrow { .. })?;
 
-        let body = any! {
+        let body = cut!(self: parse_func_block)?;
+
+        let range = (range_start, body.range().1);
+
+        Ok(AstNode::FuncDecl {
+            id: Box::new(id),
+            is_const: const_marker.is_some(),
+            params: params.into(),
+            body: Box::new(body),
+            range,
+        })
+    }
+
+    fn parse_lambda(&mut self) -> PResult {
+        let anon_marker = token!("`!`"; self: Token::Symbol { value: '!', .. })?;
+
+        let params = many!(0.., self: parse_identifier)?;
+
+        token!("`->`"; self: Token::AssignmentArrow { .. })?;
+
+        let body = cut!(self: parse_func_block)?;
+
+        let range = (anon_marker.span().range.0, body.range().1);
+
+        Ok(AstNode::Lambda {
+            params: params.into(),
+            body: Box::new(body),
+            range,
+        })
+    }
+
+    fn parse_func_block(&mut self) -> PResult {
+        any! {
             self: parse_block, "indented block"
                 | parse_case, "case statement"
+                | parse_lambda, "lambda"
+                | parse_indexing, "indexing"
                 | parse_func_decl, "function declaration"
                 | parse_iteration_op, "iterator"
                 | parse_func_call, "function call"
                 | parse_expr, "expression"
-        };
-        let body = self.cut(body)?;
-
-        let range = (range_start, body.range().1);
-
-        let result = match id {
-            Some(id) => AstNode::FuncDecl {
-                id: Some(Box::new(id)),
-                is_const: const_marker.is_some(),
-                params: params.into(),
-                body: Box::new(body),
-                range,
-            },
-            None => AstNode::Lambda {
-                params: params.into(),
-                body: Box::new(body),
-                range,
-            },
-        };
-
-        Ok(result)
+        }
     }
 
     fn parse_case(&mut self) -> PResult {
@@ -789,46 +799,50 @@ impl Parser {
     }
 
     fn parse_case_pattern(&mut self) -> PResult {
-        let first = peek!(0, self: Token::Identifier { .. });
-        if let Some(first) = first {
-            match first {
-                Token::Identifier { name, .. } => {
-                    let range = self.lexer.next().span().range;
+        // TODO:
+        // - [ ] Implement `or` case pattern
+        // - [ ] Implement `range` case pattern
+        // - [ ] Implement `regex` case pattern
+        // - [ ] Implement `list` case pattern
+        // - [ ] Implement `record` case pattern
 
-                    return Ok(AstNode::CasePattern {
-                        kind: CasePatternKind::Any,
-                        expr: Box::new(AstNode::Ident { name, range }),
-                        range,
-                    });
-                }
-                _ => unreachable!(),
+        let expr = cut!(self: parse_case_pattern_expr)?;
+        match expr {
+            AstNode::Range { .. } => todo!("range case pattern"),
+            AstNode::Ident {
+                ref name, range, ..
+            } => {
+                let kind = if name == UNDERLINE {
+                    CasePatternKind::Any
+                } else {
+                    CasePatternKind::Ident
+                };
+
+                Ok(AstNode::CasePattern {
+                    kind,
+                    expr: Box::new(expr),
+                    range,
+                })
             }
-        }
-
-        let first = cut!(self: parse_case_pattern_expr)?;
-
-        if opt!(self: Token::Symbol { value: '|', .. }).is_some() {
-            let rest = cut!(self: parse_case_pattern_or)?;
-
-            let range = (first.range().0, rest.last().unwrap().range().1);
-
-            let mut items = EcoVec::new();
-            items.push(first);
-            items.extend(rest);
-
-            Ok(AstNode::CasePattern {
-                kind: CasePatternKind::Or,
-                expr: Box::new(AstNode::List { items, range }),
+            AstNode::BoolLit { range, .. } => Ok(AstNode::CasePattern {
+                kind: CasePatternKind::Literal,
+                expr: Box::new(expr),
                 range,
-            })
-        } else {
-            let range = first.range();
-
-            Ok(AstNode::CasePattern {
-                kind: CasePatternKind::Expr,
-                expr: Box::new(first),
+            }),
+            AstNode::StrLit { range, .. } => Ok(AstNode::CasePattern {
+                kind: CasePatternKind::Literal,
+                expr: Box::new(expr),
                 range,
-            })
+            }),
+            AstNode::Regex { .. } => todo!("regex case pattern"),
+            AstNode::NumLit { range, .. } => Ok(AstNode::CasePattern {
+                kind: CasePatternKind::Literal,
+                expr: Box::new(expr),
+                range,
+            }),
+            AstNode::List { .. } => todo!("list case pattern"),
+            AstNode::Record { .. } => todo!("record case pattern"),
+            _ => unreachable!(),
         }
     }
 
@@ -844,54 +858,61 @@ impl Parser {
         any! {
             self: parse_range, "range"
                 | parse_identifier, "identifier"
+                | parse_bool, "boolean"
                 | parse_string, "string"
                 | parse_regex, "regular expression"
                 | parse_number, "number"
                 | parse_list, "list"
+                | parse_record, "record"
         }
     }
 
-    fn parse_case_pattern_or(&mut self) -> Result<Vec<AstNode>, ParseError> {
-        let mut items = Vec::new();
+    // fn parse_case_pattern_or(&mut self) -> Result<Vec<AstNode>, ParseError> {
+    //     let mut items = Vec::new();
 
-        loop {
-            let item = any! {
-                self: parse_identifier, "identifier"
-                    | parse_string, "string"
-                    | parse_number, "number"
-            };
+    //     loop {
+    //         let item = any! {
+    //             self: parse_identifier, "identifier"
+    //                 | parse_string, "string"
+    //                 | parse_number, "number"
+    //         };
 
-            items.push(self.cut(item)?);
+    //         items.push(self.cut(item)?);
 
-            if opt!(self: Token::Symbol { value: '|', .. }).is_none() {
-                break;
-            }
-        }
+    //         if opt!(self: Token::Symbol { value: '|', .. }).is_none() {
+    //             break;
+    //         }
+    //     }
 
-        if items.is_empty() {
-            return Err(ParseError::Unexpected {
-                expected: &["identifier", "string", "number"],
-            });
-        }
+    //     if items.is_empty() {
+    //         return Err(ParseError::Unexpected {
+    //             expected: &["identifier", "string", "number"],
+    //         });
+    //     }
 
-        Ok(items)
-    }
+    //     Ok(items)
+    // }
 
     fn parse_expr(&mut self) -> PResult {
         any! {
             self: parse_range, "range"
+                | parse_indexing, "indexing"
                 | parse_identifier, "identifier"
+                | parse_bool, "boolean"
                 | parse_string, "string"
                 | parse_number, "number"
                 | parse_list, "list"
                 | parse_record, "record"
                 | parse_par_expr, "expression"
+                | parse_func_ref, "function reference"
+                | parse_lambda, "lambda"
         }
     }
 
     fn parse_func_call(&mut self) -> PResult {
         let id = any! {
             self: parse_identifier, "identifier"
+                | parse_func_ref, "function reference"
                 | parse_par_func_call, "function call"
         }?;
 
@@ -938,6 +959,29 @@ impl Parser {
         Ok(result)
     }
 
+    fn parse_indexing(&mut self) -> PResult {
+        let expr = any! {
+            self: parse_range, "range"
+                | parse_identifier, "identifier"
+                | parse_list, "list"
+                | parse_record, "record"
+                | parse_func_ref, "function reference"
+                | parse_par_expr, "expression"
+        }?;
+
+        token!("`@`"; self: Token::Symbol { value: '@', .. })?;
+
+        let index = cut!(self: parse_expr)?;
+
+        let range = (expr.range().0, index.range().1);
+
+        Ok(AstNode::Indexing {
+            expr: Box::new(expr),
+            index: Box::new(index),
+            range,
+        })
+    }
+
     fn parse_iteration_op(&mut self) -> PResult {
         let left = self.parse_expr()?;
 
@@ -977,18 +1021,29 @@ impl Parser {
         }
     }
 
+    fn parse_bool(&mut self) -> PResult {
+        let value = token!("boolean"; self: Token::Keyword { name: Keyword::True, .. }
+                                          | Token::Keyword { name: Keyword::False, .. })?;
+
+        let (value, span) = match value {
+            Token::Keyword { name, span } => match name {
+                Keyword::True => (true, span),
+                Keyword::False => (false, span),
+                _ => unreachable!(),
+            },
+            _ => unreachable!(),
+        };
+
+        Ok(AstNode::BoolLit {
+            value,
+            range: span.range,
+        })
+    }
+
     fn parse_string(&mut self) -> PResult {
         let format_marker = opt!(self: Token::Symbol { value: '$', .. });
 
-        let (value, span) = match format_marker {
-            Some(Token::Symbol { span: fmt_span, .. }) => {
-                let (value, mut span) = cut!(self: parse_string_part)?;
-                span.range.0 = fmt_span.range.0;
-                (value, span)
-            }
-            Some(_) => unreachable!(),
-            None => self.parse_string_part()?,
-        };
+        let (value, span) = self.parse_string_part()?;
 
         Ok(AstNode::StrLit {
             value,
@@ -1041,7 +1096,7 @@ impl Parser {
         })
     }
 
-    fn parse_number_part(&mut self) -> Result<(u64, Span), ParseError> {
+    fn parse_number_part(&mut self) -> Result<(i64, Span), ParseError> {
         map!(self: Token::Number { value, span }, "number" => (value, span))
     }
 
@@ -1127,7 +1182,7 @@ impl Parser {
         }
 
         loop {
-            let key = cut!(self: parse_string)?;
+            let key = cut!(self: parse_identifier)?;
 
             let eq = token!("`:`"; self: Token::Symbol { value: ':', .. });
             self.cut(eq)?;
@@ -1197,12 +1252,13 @@ impl Parser {
     }
 
     fn parse_par_expr(&mut self) -> PResult {
-        let start = token!("`(`"; self: Token::Symbol { value: '(', .. })?;
+        token!("`(`"; self: Token::Symbol { value: '(', .. })?;
 
         self.ignore_nl_and_ws()?;
 
         let expr = any! {
-            self: parse_iteration_op, "iterator"
+            self: parse_indexing, "indexing"
+                | parse_iteration_op, "iterator"
                 | parse_func_call, "function call"
                 | parse_expr, "expression"
         };
@@ -1211,49 +1267,21 @@ impl Parser {
         self.ignore_nl_and_ws()?;
 
         let end = token!("`)`"; self: Token::Symbol { value: ')', .. });
-        let end = self.cut(end)?;
-
-        let expr = match expr {
-            // TODO: Add `Lambda`
-            // TODO: Add `Case`
-            AstNode::FuncCall { callee, args, .. } => AstNode::FuncCall {
-                callee,
-                args,
-                range: (start.span().range.0, end.span().range.1),
-            },
-            AstNode::IterationOp { id, expr, body, .. } => AstNode::IterationOp {
-                id,
-                expr,
-                body,
-                range: (start.span().range.0, end.span().range.1),
-            },
-            AstNode::Ident { name, .. } => AstNode::Ident {
-                name,
-                range: (start.span().range.0, end.span().range.1),
-            },
-            AstNode::StrLit {
-                value, is_format, ..
-            } => AstNode::StrLit {
-                value,
-                is_format,
-                range: (start.span().range.0, end.span().range.1),
-            },
-            AstNode::NumLit { value, .. } => AstNode::NumLit {
-                value,
-                range: (start.span().range.0, end.span().range.1),
-            },
-            AstNode::List { items, .. } => AstNode::List {
-                items,
-                range: (start.span().range.0, end.span().range.1),
-            },
-            AstNode::Record { keys, values, .. } => AstNode::Record {
-                keys,
-                values,
-                range: (start.span().range.0, end.span().range.1),
-            },
-            _ => expr,
-        };
+        self.cut(end)?;
 
         Ok(expr)
+    }
+
+    fn parse_func_ref(&mut self) -> PResult {
+        let start = token!("`&`"; self: Token::Symbol { value: '&', .. })?;
+
+        let id = cut!(self: parse_identifier)?;
+
+        let range = (start.span().range.0, id.range().1);
+
+        Ok(AstNode::FuncRef {
+            id: Box::new(id),
+            range,
+        })
     }
 }

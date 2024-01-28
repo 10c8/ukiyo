@@ -15,7 +15,7 @@ use codespan_reporting::{
 };
 
 use crate::{
-    interpreter::{Environment, Interpreter},
+    interpreter::Environment,
     lexer::{Lexer, ToDiagnostic},
     parser::Parser,
 };
@@ -27,13 +27,14 @@ fn main() {
     files.add("src", &source);
 
     let writer = StandardStream::stderr(ColorChoice::Auto);
-    let config = term::Config::default();
+    let mut config = term::Config::default();
+    config.chars = term::Chars::ascii();
 
     let start = Instant::now();
 
     let mut lexer = Lexer::new(&source);
     if let Err(err) = lexer.lex() {
-        let diagnostic = err.to_diagnostic(&files);
+        let diagnostic = err.to_diagnostic();
         term::emit(&mut writer.lock(), &config, &files, &diagnostic).unwrap();
         return;
     }
@@ -62,7 +63,8 @@ fn main() {
         //     }
         // }
 
-        parser.display_error(files, err);
+        let diagnostic = parser.error_to_diagnostic(err);
+        term::emit(&mut writer.lock(), &config, &files, &diagnostic).unwrap();
         return;
     }
 
@@ -94,10 +96,10 @@ fn main() {
     let mut environment = Environment::new();
     environment.load_stdlib();
 
-    let mut tail = Interpreter::new();
-    let result = tail.eval(&ast, &mut environment);
+    let result = ast.eval(&mut environment);
     if let Err(err) = result {
-        tail.display_error(files, err);
+        let diagnostic = err.to_diagnostic();
+        term::emit(&mut writer.lock(), &config, &files, &diagnostic).unwrap();
         return;
     }
 

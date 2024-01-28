@@ -7,6 +7,7 @@ edition = "2021"
 codespan-reporting = ">=0.11.1"
 ecow = ">=0.2.0"
 memory-stats = ">=1.1.0"
+once_cell = "1.19.0"
 rand = ">=0.8.5"
 regex = ">=1.10.2"
 reqwest = { version = ">=0.11.23", features = ["blocking", "json"] }

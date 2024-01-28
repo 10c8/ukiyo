@@ -1,8 +1,13 @@
-const fizzbuzz -> 0 ..< 10 |x|
-  case [(mod x 3), (mod x 5)] of
-    [0, 0] => "FizzBuzz"
-    [0, _] => "Fizz"
-    [_, 0] => "Buzz"
-    _      => x
+const fruits -> ["apple", "banana", "avocado", "durian", "tomato"]
+const colors -> ["red", "yellow", "green", "brown", "red"]
 
-join fizzbuzz "\n"
+const pairs -> record (zip fruits (map colors !c -> {
+  color: c,
+  is_red: (eq c "red")
+}))
+
+join (map pairs !name info ->
+  case info @ "is_red" of
+    true  => $"{{name}}s are cool as fuck!"
+    false => $"{{name}}s are not cool, they are {{info @ "color"}}!"
+) "\n"

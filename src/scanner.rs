@@ -81,7 +81,6 @@ impl Scanner {
     }
 
     /// Returns true if `target` is found at the current cursor position and advances the cursor.
-    /// Otherwise, returns false and does not advance the cursor.
     pub fn try_consume_sequence(&mut self, target: &str) -> bool {
         let mut cursor = self.cursor;
         let mut line = self.line;
@@ -106,6 +105,22 @@ impl Scanner {
         self.cursor = cursor;
         self.line = line;
         self.column = column;
+
+        true
+    }
+
+    /// Returns true if `target` is found at the current cursor position without advancing the cursor.
+    pub fn try_peek_sequence(&self, target: &str) -> bool {
+        let mut cursor = self.cursor;
+
+        for chr in target.chars() {
+            match self.chars.get(cursor) {
+                Some(c) if *c == chr => {
+                    cursor += 1;
+                }
+                _ => return false,
+            }
+        }
 
         true
     }
