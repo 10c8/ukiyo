@@ -240,6 +240,10 @@ impl Closure {
         {
             let mut environment = environment.lock().unwrap();
             for (name, arg) in self.params.iter().zip(args.iter()) {
+                if *name == UNDERLINE {
+                    continue;
+                }
+
                 environment.set(name, arg.clone(), self.body.range());
             }
         }
@@ -283,6 +287,10 @@ impl Closure {
             let mut environment = environment.lock().unwrap();
 
             for (name, arg) in self.params.iter().zip(args.iter()) {
+                if *name == UNDERLINE {
+                    continue;
+                }
+
                 environment.set(name, arg.clone(), self.body.range());
             }
         }
@@ -620,13 +628,7 @@ impl AstNode {
                 let mut params = Vec::new();
                 for param in param_list {
                     match param {
-                        AstNode::Ident { name, .. } => {
-                            if *name == UNDERLINE {
-                                return Err(InterpreterError::InvalidFunctionParam(param.range()));
-                            } else {
-                                params.push(name.clone())
-                            }
-                        }
+                        AstNode::Ident { name, .. } => params.push(name.clone()),
                         _ => unreachable!(),
                     }
                 }

@@ -455,14 +455,15 @@ impl Parser {
                         };
                         format!("Expected {} {}.", article, expected[0])
                     } else {
-                        format!(
-                            "Expected one of:\n{}",
-                            expected
-                                .iter()
-                                .map(|e| format!(" - {}", e.to_string()))
-                                .collect::<Vec<_>>()
-                                .join("\n")
-                        )
+                        match expected.len() {
+                            1 => format!("Expected {}.", expected[0]),
+                            2 => format!("Expected one of: {} or {}.", expected[0], expected[1]),
+                            _ => {
+                                let mut expected = expected.to_vec();
+                                let last = expected.pop().unwrap();
+                                format!("Expected one of: {}, or {}.", expected.join(", "), last)
+                            }
+                        }
                     }
                 };
 
@@ -612,7 +613,7 @@ impl Parser {
         let mut body = EcoVec::new();
 
         loop {
-            body.push(cut!(self: parse_stmt)?);
+            body.push(cut!(self: parse_block_stmt)?);
 
             self.ignore_nl()?;
 
@@ -635,6 +636,18 @@ impl Parser {
         );
 
         Ok(AstNode::Block { body, range })
+    }
+
+    fn parse_block_stmt(&mut self) -> PResult {
+        any! {
+            self: parse_func_decl, "function declaration"
+                | parse_case, "case statement"
+                | parse_indexing, "indexing"
+                | parse_concat, "concatenation"
+                | parse_iteration_op, "iterator"
+                | parse_func_call, "function call"
+                | parse_expr, "expression"
+        }
     }
 
     fn parse_func_decl(&mut self) -> PResult {
@@ -976,10 +989,14 @@ impl Parser {
         let expr = any! {
             self: parse_range, "range"
                 | parse_identifier, "identifier"
+                | parse_bool, "boolean"
+                | parse_string, "string"
+                | parse_number, "number"
                 | parse_list, "list"
                 | parse_record, "record"
-                | parse_func_ref, "function reference"
                 | parse_par_expr, "expression"
+                | parse_func_ref, "function reference"
+                | parse_lambda, "lambda"
         }?;
 
         token!("`@`"; self: Token::Symbol { value: '@', .. })?;
@@ -998,24 +1015,21 @@ impl Parser {
     fn parse_concat(&mut self) -> PResult {
         let left = any! {
             self: parse_range, "range"
+                | parse_indexing, "indexing"
                 | parse_identifier, "identifier"
+                | parse_bool, "boolean"
+                | parse_string, "string"
+                | parse_number, "number"
                 | parse_list, "list"
                 | parse_record, "record"
-                | parse_func_ref, "function reference"
                 | parse_par_expr, "expression"
+                | parse_func_ref, "function reference"
+                | parse_lambda, "lambda"
         }?;
 
         token!("`++`"; self: Token::ConcatOperator { .. })?;
 
-        let right = any! {
-            self: parse_range, "range"
-                | parse_identifier, "identifier"
-                | parse_list, "list"
-                | parse_record, "record"
-                | parse_func_ref, "function reference"
-                | parse_par_expr, "expression"
-        };
-        let right = self.cut(right)?;
+        let right = cut!(self: parse_expr)?;
 
         let range = (left.range().0, right.range().1);
 
@@ -1140,7 +1154,7 @@ impl Parser {
         })
     }
 
-    fn parse_number_part(&mut self) -> Result<(i64, Span), ParseError> {
+    fn parse_number_part(&mut self) -> Result<(usize, Span), ParseError> {
         map!(self: Token::Number { value, span }, "number" => (value, span))
     }
 

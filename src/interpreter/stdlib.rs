@@ -705,29 +705,68 @@ impl StdLib {
     pub fn std_filter(args: Vec<Value>, range: Range) -> IResult {
         native_arg_count!("filter"; args == 2; range);
 
-        let list = native_arg!("filter"; args @ 0 => List @ range);
+        let collection = native_arg!("filter"; args @ 0; range);
         let predicate = native_arg!("filter"; args @ 1 => Closure @ range);
 
-        let mut result = Vec::new();
-        for item in list.iter() {
-            let value = predicate.call(vec![item.clone()], None)?;
-            match value.borrow() {
-                ValueData::Boolean(value) => {
-                    if *value {
-                        result.push(item.clone());
+        let result = match collection.borrow() {
+            ValueData::List(collection) => {
+                let mut result = Vec::new();
+
+                for item in collection.iter() {
+                    let keep = predicate.call(vec![item.clone()], None)?;
+
+                    match keep.borrow() {
+                        ValueData::Boolean(keep) => {
+                            if *keep {
+                                result.push(item.clone());
+                            }
+                        }
+                        _ => {
+                            return Err(InterpreterError::NativeFunctionError(
+                                "filter: Predicate must return a boolean.",
+                                range,
+                            ));
+                        }
                     }
                 }
-                _ => {
-                    return Err(InterpreterError::TypeMismatch(
-                        range,
-                        "boolean",
-                        typeof_value(&value),
-                    ))
-                }
-            }
-        }
 
-        Ok(ValueData::List(result.into()).into())
+                ValueData::List(result.into())
+            }
+            ValueData::Record(collection) => {
+                let mut result = FxHashMap::default();
+
+                for (key, value) in collection.iter() {
+                    let keep = predicate.call(
+                        vec![Arc::new(ValueData::String(key.clone())), value.clone()].into(),
+                        None,
+                    )?;
+
+                    match keep.borrow() {
+                        ValueData::Boolean(keep) => {
+                            if *keep {
+                                result.insert(key.clone(), value.clone());
+                            }
+                        }
+                        _ => {
+                            return Err(InterpreterError::NativeFunctionError(
+                                "filter: Predicate must return a boolean.",
+                                range,
+                            ));
+                        }
+                    }
+                }
+
+                ValueData::Record(result.into())
+            }
+            _ => {
+                return Err(InterpreterError::NativeFunctionError(
+                    format!("filter: Cannot filter a {}.", typeof_value(&collection)).leak(),
+                    range,
+                ));
+            }
+        };
+
+        Ok(result.into())
     }
 
     pub fn std_has(args: Vec<Value>, range: Range) -> IResult {
