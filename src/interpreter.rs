@@ -1,6 +1,9 @@
 mod stdlib;
 
-use std::{borrow::Borrow, sync::Arc};
+use std::{
+    borrow::Borrow,
+    sync::{Arc, Mutex},
+};
 
 use codespan_reporting::diagnostic::{Diagnostic, Label};
 use ecow::EcoString;
@@ -15,28 +18,31 @@ use stdlib::StdLib;
 
 static UNDERLINE: &str = "_";
 
-type IResult = Result<Arc<Value>, InterpreterError>;
+type IResult = Result<Value, InterpreterError>;
+
+type Value = Arc<ValueData>;
 
 #[derive(Debug, Clone, PartialEq)]
-pub enum Value {
+pub enum ValueData {
     Boolean(bool),
     String(EcoString),
     Number(f64),
-    List(Arc<[Arc<Value>]>),
-    Record(FxHashMap<EcoString, Arc<Value>>),
+    List(Arc<[Value]>),
+    Record(FxHashMap<EcoString, Value>),
     Closure(Closure),
-    NativeFunction(fn(Vec<Arc<Value>>, Range) -> IResult),
+    // TODO: Partial application of native functions
+    NativeFunction(fn(Vec<Value>, Range) -> IResult),
     Any,
     Nil,
 }
 
-impl std::fmt::Display for Value {
+impl std::fmt::Display for ValueData {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Value::Boolean(value) => write!(f, "{}", value),
-            Value::String(value) => write!(f, "\"{}\"", value),
-            Value::Number(value) => write!(f, "{}", value),
-            Value::List(items) => {
+            ValueData::Boolean(value) => write!(f, "{}", value),
+            ValueData::String(value) => write!(f, "\"{}\"", value),
+            ValueData::Number(value) => write!(f, "{}", value),
+            ValueData::List(items) => {
                 write!(f, "[")?;
                 for (i, item) in items.iter().enumerate() {
                     if i != 0 {
@@ -46,7 +52,7 @@ impl std::fmt::Display for Value {
                 }
                 write!(f, "]")
             }
-            Value::Record(record) => {
+            ValueData::Record(record) => {
                 write!(f, "{{")?;
                 for (i, (key, value)) in record.iter().enumerate() {
                     if i != 0 {
@@ -56,34 +62,35 @@ impl std::fmt::Display for Value {
                 }
                 write!(f, "}}")
             }
-            Value::Closure(_) => write!(f, "closure"),
-            Value::NativeFunction(_) => write!(f, "native function"),
-            Value::Any => write!(f, "any"),
-            Value::Nil => write!(f, "nil"),
+            ValueData::Closure(_) => write!(f, "closure"),
+            ValueData::NativeFunction(_) => write!(f, "native function"),
+            ValueData::Any => write!(f, "any"),
+            ValueData::Nil => write!(f, "nil"),
         }
     }
 }
 
-fn typeof_value(value: &Value) -> &'static str {
+fn typeof_value(value: &ValueData) -> &'static str {
     match value {
-        Value::Boolean(_) => "boolean",
-        Value::String(_) => "string",
-        Value::Number(_) => "number",
-        Value::List(_) => "list",
-        Value::Record(_) => "record",
-        Value::Closure(_) => "closure",
-        Value::NativeFunction(_) => "native function",
-        Value::Any => "any",
-        Value::Nil => "nil",
+        ValueData::Boolean(_) => "boolean",
+        ValueData::String(_) => "string",
+        ValueData::Number(_) => "number",
+        ValueData::List(_) => "list",
+        ValueData::Record(_) => "record",
+        ValueData::Closure(_) => "closure",
+        ValueData::NativeFunction(_) => "native function",
+        ValueData::Any => "any",
+        ValueData::Nil => "nil",
     }
 }
 
 #[macro_export]
 macro_rules! native_fn {
     ($name:literal; $self:ident: $fn:expr) => {
-        $self
-            .values
-            .insert($name.into(), (Arc::new(Value::NativeFunction($fn)), (0, 0)));
+        $self.store.insert(
+            $name.into(),
+            (Arc::new(ValueData::NativeFunction($fn)), (0, 0)),
+        );
     };
 }
 
@@ -118,7 +125,7 @@ macro_rules! native_arg {
     ($name:literal; $args:ident @ $index:expr => $type:ident @ $range:expr) => {
         if let Some(value) = $args.get($index) {
             match value.borrow() {
-                Value::$type(value) => value,
+                ValueData::$type(value) => value,
                 _ => {
                     return Err(InterpreterError::NativeFunctionInvalidArgument(
                         $range,
@@ -139,15 +146,24 @@ macro_rules! native_arg {
     };
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone)]
 pub struct Environment {
-    values: FxHashMap<EcoString, (Arc<Value>, Range)>,
+    store: FxHashMap<EcoString, (Value, Range)>,
+    parent: Option<Arc<Mutex<Environment>>>,
 }
 
 impl Environment {
     pub fn new() -> Self {
         Self {
-            values: FxHashMap::default(),
+            store: FxHashMap::default(),
+            parent: None,
+        }
+    }
+
+    pub fn new_child(parent: Arc<Mutex<Self>>) -> Self {
+        Self {
+            store: FxHashMap::default(),
+            parent: Some(parent),
         }
     }
 
@@ -155,12 +171,18 @@ impl Environment {
         StdLib::load(self);
     }
 
-    pub fn get(&self, name: &str) -> Option<&(Arc<Value>, Range)> {
-        self.values.get(name)
+    pub fn get(&self, name: &str) -> Option<(Value, Range)> {
+        match self.store.get(name) {
+            Some(value) => Some(value.clone()),
+            None => match &self.parent {
+                Some(parent) => parent.lock().unwrap().get(name),
+                None => None,
+            },
+        }
     }
 
-    pub fn set(&mut self, name: &str, value: Arc<Value>, range: Range) {
-        self.values.insert(name.into(), (value, range));
+    pub fn set(&mut self, name: &str, value: Value, range: Range) {
+        self.store.insert(name.into(), (value, range));
     }
 }
 
@@ -170,42 +192,76 @@ static GLOBAL_ENV: Lazy<Environment> = Lazy::new(|| {
     env
 });
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone)]
 pub struct Closure {
     id: Option<EcoString>,
     params: Vec<EcoString>,
     body: AstNode,
     range: Range,
-    env: Environment,
+    env: Arc<Mutex<Environment>>,
+    partial_args: Option<Vec<Value>>,
+}
+
+impl PartialEq for Closure {
+    fn eq(&self, other: &Self) -> bool {
+        let env = self.env.lock().unwrap();
+        let other_env = other.env.lock().unwrap();
+
+        self.id == other.id
+            && self.params == other.params
+            && self.body == other.body
+            && self.range == other.range
+            && env.store == other_env.store
+    }
 }
 
 impl Closure {
-    pub fn call(&self, args: Vec<Arc<Value>>, caller_range: Option<Range>) -> IResult {
-        if self.params.len() != args.len() {
-            let caller_range = caller_range.unwrap_or(self.range);
-            let callee_range = if caller_range == self.range {
-                None
-            } else {
-                Some(self.range)
-            };
-
+    pub fn call(&self, args: Vec<Value>, caller_range: Option<Range>) -> IResult {
+        if args.len() > self.params.len() {
             return Err(InterpreterError::WrongArgumentCount(
-                caller_range,
-                callee_range,
+                caller_range.unwrap_or(self.range),
+                None,
                 self.params.len(),
                 args.len(),
             ));
         }
 
-        let mut environment = self.env.clone();
+        let mut args = args;
 
-        for (name, arg) in self.params.iter().zip(args.iter()) {
-            environment.set(name, arg.clone(), self.body.range());
+        if args.len() < self.params.len() {
+            if let Some(partial_args) = &self.partial_args {
+                let arg_count = args.len() + partial_args.len();
+                if arg_count < self.params.len() {
+                    let caller_range = caller_range.unwrap_or(self.range);
+                    let callee_range = if caller_range == self.range {
+                        None
+                    } else {
+                        Some(self.range)
+                    };
+
+                    return Err(InterpreterError::WrongArgumentCount(
+                        caller_range,
+                        callee_range,
+                        self.params.len(),
+                        arg_count,
+                    ));
+                }
+
+                args.extend(partial_args.clone());
+            } else {
+                let mut closure = self.clone();
+                closure.partial_args = Some(args);
+
+                return Ok(Arc::new(ValueData::Closure(closure)));
+            }
         }
 
-        if let Some(ref id) = self.id {
-            if !environment.values.contains_key(id) {
-                environment.set(&id, Arc::new(Value::Closure(self.clone())), self.range);
+        let mut environment = Arc::new(Mutex::new(Environment::new_child(self.env.clone())));
+
+        {
+            let mut environment = environment.lock().unwrap();
+            for (name, arg) in self.params.iter().zip(args.iter()) {
+                environment.set(name, arg.clone(), self.body.range());
             }
         }
 
@@ -219,7 +275,7 @@ type Range = (usize, usize);
 pub enum InterpreterError {
     UndefinedVariable(EcoString, Range),
     NotCallable(AstNode, Range),
-    NotIterable(Arc<Value>, Range),
+    NotIterable(Value, Range),
     IndexOutOfBounds(&'static str, Range, i64, usize),
     InvalidKey(EcoString, Range),
     WrongArgumentCount(Range, Option<Range>, usize, usize),
@@ -435,21 +491,19 @@ impl ToDiagnostic for InterpreterError {
     }
 }
 
-fn env_get(env: &Environment, name: &str) -> Option<(Arc<Value>, Range)> {
-    if let Some((value, range)) = env.get(name) {
-        Some((value.clone(), *range))
+fn env_get(env: &Arc<Mutex<Environment>>, name: &str) -> Option<(Value, Range)> {
+    if let Some((value, range)) = env.lock().unwrap().get(name) {
+        Some((value, range))
     } else {
-        GLOBAL_ENV
-            .get(name)
-            .map(|(value, range)| (value.clone(), *range))
+        GLOBAL_ENV.get(name)
     }
 }
 
 impl AstNode {
-    pub fn eval(&self, environment: &mut Environment) -> IResult {
+    pub fn eval(&self, environment: &mut Arc<Mutex<Environment>>) -> IResult {
         match self {
             AstNode::Prog { body, .. } | AstNode::Block { body, .. } => {
-                let mut result = Arc::new(Value::Nil);
+                let mut result = Arc::new(ValueData::Nil);
                 for node in body {
                     result = node.eval(environment)?;
                 }
@@ -498,24 +552,29 @@ impl AstNode {
                     }
                 }
 
+                let env = Arc::new(Mutex::new(Environment::new_child(environment.clone())));
                 let closure = Closure {
                     id: if !is_const { Some(id.clone()) } else { None },
                     params,
                     body: *body.clone(),
                     range: id_range,
-                    env: environment.clone(),
+                    env,
+                    partial_args: None,
                 };
 
                 let value = if *is_const {
                     // TODO: Make it lazy
                     closure.call(vec![], None)?
                 } else {
-                    Arc::new(Value::Closure(closure))
+                    Arc::new(ValueData::Closure(closure))
                 };
 
-                environment.set(id, value, id_node.as_ref().range());
+                environment
+                    .lock()
+                    .unwrap()
+                    .set(id, value, id_node.as_ref().range());
 
-                Ok(Arc::new(Value::Nil))
+                Ok(Arc::new(ValueData::Nil))
             }
             AstNode::FuncRef { id: id_node, .. } => {
                 let id = match id_node.as_ref() {
@@ -524,7 +583,7 @@ impl AstNode {
                 };
 
                 if let Some((value, _)) = env_get(environment, id) {
-                    Ok(value.clone())
+                    Ok(value)
                 } else {
                     return Err(InterpreterError::UndefinedVariable(
                         id.clone(),
@@ -551,15 +610,17 @@ impl AstNode {
                     }
                 }
 
+                let env = Arc::new(Mutex::new(Environment::new_child(environment.clone())));
                 let closure = Closure {
                     id: None,
                     params,
                     body: *body.clone(),
                     range: *range,
-                    env: environment.clone(),
+                    env,
+                    partial_args: None,
                 };
 
-                Ok(Arc::new(Value::Closure(closure)))
+                Ok(Arc::new(ValueData::Closure(closure)))
             }
             AstNode::Case { expr, cases, .. } => {
                 let case_expr = expr.eval(environment)?;
@@ -579,12 +640,16 @@ impl AstNode {
                                     _ => unreachable!(),
                                 };
 
+                                let env = Arc::new(Mutex::new(Environment::new_child(
+                                    environment.clone(),
+                                )));
                                 let closure = Closure {
                                     id: None,
                                     params: vec![test_name.clone()],
                                     body: *body.clone(),
                                     range: body.range(),
-                                    env: environment.clone(),
+                                    env,
+                                    partial_args: None,
                                 };
 
                                 let result = closure.call(vec![case_expr], None)?;
@@ -604,7 +669,7 @@ impl AstNode {
                     }
                 }
 
-                Ok(Arc::new(Value::Nil))
+                Ok(Arc::new(ValueData::Nil))
             }
             AstNode::FuncCall {
                 callee,
@@ -624,7 +689,7 @@ impl AstNode {
                     AstNode::FuncCall { .. } | AstNode::Lambda { .. } => {
                         let closure = callee.eval(environment)?;
                         match closure.borrow() {
-                            Value::Closure(closure) => {
+                            ValueData::Closure(closure) => {
                                 let result = closure.call(args, Some(self.range()))?;
                                 return Ok(result);
                             }
@@ -653,9 +718,9 @@ impl AstNode {
                 let index = index_node.eval(environment)?;
 
                 match expr.borrow() {
-                    Value::String(value) => {
+                    ValueData::String(value) => {
                         let index = match index.borrow() {
-                            Value::Number(value) => *value as i64,
+                            ValueData::Number(value) => *value as i64,
                             value => Err(InterpreterError::TypeMismatch(
                                 index_node.range(),
                                 "number",
@@ -673,7 +738,7 @@ impl AstNode {
                         }
 
                         let value = if index < 0 {
-                            Arc::new(Value::String(
+                            Arc::new(ValueData::String(
                                 value
                                     .chars()
                                     .nth(value.len() - index as usize)
@@ -681,16 +746,16 @@ impl AstNode {
                                     .into(),
                             ))
                         } else {
-                            Arc::new(Value::String(
+                            Arc::new(ValueData::String(
                                 value.chars().nth(index as usize).unwrap().into(),
                             ))
                         };
 
                         Ok(value)
                     }
-                    Value::List(items) => {
+                    ValueData::List(items) => {
                         let index = match index.borrow() {
-                            Value::Number(value) => *value as i64,
+                            ValueData::Number(value) => *value as i64,
                             value => Err(InterpreterError::TypeMismatch(
                                 index_node.range(),
                                 "number",
@@ -715,9 +780,9 @@ impl AstNode {
 
                         Ok(value)
                     }
-                    Value::Record(record) => {
+                    ValueData::Record(record) => {
                         let key = match index.borrow() {
-                            Value::String(value) => value.clone(),
+                            ValueData::String(value) => value.clone(),
                             value => Err(InterpreterError::TypeMismatch(
                                 index_node.range(),
                                 "string",
@@ -756,20 +821,20 @@ impl AstNode {
                 }
 
                 match left.borrow() {
-                    Value::String(left) => {
+                    ValueData::String(left) => {
                         let right = match right.borrow() {
-                            Value::String(right) => right,
+                            ValueData::String(right) => right,
                             _ => unreachable!(),
                         };
 
                         let mut result = left.clone();
                         result.push_str(right);
 
-                        Ok(Arc::new(Value::String(result)))
+                        Ok(Arc::new(ValueData::String(result)))
                     }
-                    Value::List(left) => {
+                    ValueData::List(left) => {
                         let right = match right.borrow() {
-                            Value::List(right) => right,
+                            ValueData::List(right) => right,
                             _ => unreachable!(),
                         };
 
@@ -777,7 +842,7 @@ impl AstNode {
                         result.extend_from_slice(left);
                         result.extend_from_slice(right);
 
-                        Ok(Arc::new(Value::List(result.into())))
+                        Ok(Arc::new(ValueData::List(result.into())))
                     }
                     _ => unreachable!(),
                 }
@@ -793,38 +858,39 @@ impl AstNode {
                     _ => unreachable!(),
                 };
 
-                let env = environment.clone();
+                let env = Arc::new(Mutex::new(Environment::new_child(environment.clone())));
                 let closure = Closure {
                     id: None,
                     params: vec![id.clone()],
                     body: body.as_ref().clone(),
                     range: body.range(),
                     env,
+                    partial_args: None,
                 };
 
                 let expr = expr_node.eval(environment)?;
 
                 match expr.borrow() {
-                    Value::List(items) => {
+                    ValueData::List(items) => {
                         let mut result = Vec::new();
                         for item in items.iter() {
                             let value = closure.call(vec![item.clone()], None)?;
                             result.push(value);
                         }
 
-                        Ok(Value::List(result.into()).into())
+                        Ok(ValueData::List(result.into()).into())
                     }
-                    Value::String(value) => {
+                    ValueData::String(value) => {
                         let mut result = Vec::new();
                         for item in value.chars() {
-                            let value =
-                                closure.call(vec![Arc::new(Value::String(item.into()))], None)?;
+                            let value = closure
+                                .call(vec![Arc::new(ValueData::String(item.into()))], None)?;
                             result.push(value);
                         }
 
-                        Ok(Value::List(result.into()).into())
+                        Ok(ValueData::List(result.into()).into())
                     }
-                    Value::Record(_record) => todo!("iterate over records"), // TODO: iterate over records
+                    ValueData::Record(_record) => todo!("iterate over records"), // TODO: iterate over records
                     _ => Err(InterpreterError::NotIterable(
                         expr.clone(),
                         expr_node.range(),
@@ -832,7 +898,7 @@ impl AstNode {
                 }
             }
             AstNode::Ident { .. } => self.call(vec![], environment),
-            AstNode::BoolLit { value, .. } => Ok(Arc::new(Value::Boolean(*value))),
+            AstNode::BoolLit { value, .. } => Ok(Arc::new(ValueData::Boolean(*value))),
             AstNode::StrLit {
                 value,
                 is_format,
@@ -840,12 +906,12 @@ impl AstNode {
             } => {
                 if *is_format {
                     let result = eval_format_string(value, environment, *range)?;
-                    Ok(Arc::new(result))
+                    Ok(result)
                 } else {
-                    Ok(Arc::new(Value::String(value.clone().into())))
+                    Ok(Arc::new(ValueData::String(value.clone().into())))
                 }
             }
-            AstNode::NumLit { value, .. } => Ok(Arc::new(Value::Number(*value))),
+            AstNode::NumLit { value, .. } => Ok(Arc::new(ValueData::Number(*value))),
             AstNode::Regex { .. } => todo!("regex"), // TODO: eval regex
             AstNode::List {
                 items: item_list, ..
@@ -856,7 +922,7 @@ impl AstNode {
                     items.push(value);
                 }
 
-                Ok(Arc::new(Value::List(items.into())))
+                Ok(Arc::new(ValueData::List(items.into())))
             }
             AstNode::Record { keys, values, .. } => {
                 let mut record = FxHashMap::default();
@@ -881,7 +947,7 @@ impl AstNode {
                     record.insert(key, value);
                 }
 
-                Ok(Arc::new(Value::Record(record)))
+                Ok(Arc::new(ValueData::Record(record)))
             }
             AstNode::Range {
                 mode,
@@ -891,7 +957,7 @@ impl AstNode {
             } => {
                 let start = start_node.eval(environment)?;
                 let start = match start.borrow() {
-                    Value::Number(value) => *value as usize,
+                    ValueData::Number(value) => *value as usize,
                     value => Err(InterpreterError::TypeMismatch(
                         start_node.range(),
                         "number",
@@ -901,7 +967,7 @@ impl AstNode {
 
                 let end = end_node.eval(environment)?;
                 let end = match end.borrow() {
-                    Value::Number(value) => *value as usize,
+                    ValueData::Number(value) => *value as usize,
                     value => Err(InterpreterError::TypeMismatch(
                         end_node.range(),
                         "number",
@@ -920,11 +986,11 @@ impl AstNode {
 
                         if is_rev {
                             for i in range.rev() {
-                                result.push(Arc::new(Value::Number(i as f64)));
+                                result.push(Arc::new(ValueData::Number(i as f64)));
                             }
                         } else {
                             for i in range {
-                                result.push(Arc::new(Value::Number(i as f64)));
+                                result.push(Arc::new(ValueData::Number(i as f64)));
                             }
                         }
                     }
@@ -933,23 +999,23 @@ impl AstNode {
 
                         if is_rev {
                             for i in range.rev() {
-                                result.push(Arc::new(Value::Number(i as f64)));
+                                result.push(Arc::new(ValueData::Number(i as f64)));
                             }
                         } else {
                             for i in range {
-                                result.push(Arc::new(Value::Number(i as f64)));
+                                result.push(Arc::new(ValueData::Number(i as f64)));
                             }
                         }
                     }
                 }
 
-                Ok(Arc::new(Value::List(result.into())))
+                Ok(Arc::new(ValueData::List(result.into())))
             }
             _ => unreachable!("eval: {:#?}", self),
         }
     }
 
-    pub fn call(&self, args: Vec<Arc<Value>>, environment: &mut Environment) -> IResult {
+    pub fn call(&self, args: Vec<Value>, environment: &mut Arc<Mutex<Environment>>) -> IResult {
         match self {
             AstNode::Ident { name, range } => {
                 if *name == UNDERLINE {
@@ -957,11 +1023,11 @@ impl AstNode {
                         return Err(InterpreterError::NotCallable(self.clone(), *range));
                     }
 
-                    return Ok(Value::Any.into());
+                    return Ok(ValueData::Any.into());
                 }
 
                 let value = match env_get(environment, name) {
-                    Some((value, _)) => value.clone(),
+                    Some((value, _)) => value,
                     None => {
                         return Err(InterpreterError::UndefinedVariable(
                             name.clone(),
@@ -971,11 +1037,11 @@ impl AstNode {
                 };
 
                 match value.borrow() {
-                    Value::Closure(closure) => {
+                    ValueData::Closure(closure) => {
                         let result = closure.call(args, Some(*range))?;
                         return Ok(result);
                     }
-                    Value::NativeFunction(method) => {
+                    ValueData::NativeFunction(method) => {
                         let result = method(args, *range)?;
                         return Ok(result);
                     }
@@ -986,7 +1052,7 @@ impl AstNode {
                     }
                 }
 
-                Ok(value.clone())
+                Ok(value)
             }
             AstNode::FuncRef { id: id_node, range } => {
                 let id = match id_node.as_ref() {
@@ -995,7 +1061,7 @@ impl AstNode {
                 };
 
                 let value = match env_get(environment, id) {
-                    Some((value, _)) => value.clone(),
+                    Some((value, _)) => value,
                     None => {
                         return Err(InterpreterError::UndefinedVariable(
                             id.clone(),
@@ -1005,11 +1071,11 @@ impl AstNode {
                 };
 
                 match value.borrow() {
-                    Value::Closure(closure) => {
+                    ValueData::Closure(closure) => {
                         let result = closure.call(args, Some(*range))?;
                         return Ok(result);
                     }
-                    Value::NativeFunction(method) => {
+                    ValueData::NativeFunction(method) => {
                         let result = method(args, id_node.range())?;
                         return Ok(result);
                     }
@@ -1023,7 +1089,7 @@ impl AstNode {
                     }
                 }
 
-                Ok(value.clone())
+                Ok(value)
             }
             _ => todo!("call: {:#?}", self),
         }
@@ -1032,7 +1098,7 @@ impl AstNode {
 
 fn eval_format_string(
     value: &EcoString,
-    environment: &mut Environment,
+    environment: &Arc<Mutex<Environment>>,
     range: Range,
 ) -> Result<Value, InterpreterError> {
     let mut result = EcoString::new();
@@ -1073,7 +1139,10 @@ fn eval_format_string(
                             ));
                         }
 
-                        let value = ast.unwrap().eval(environment);
+                        let mut env =
+                            Arc::new(Mutex::new(Environment::new_child(environment.clone())));
+
+                        let value = ast.unwrap().eval(&mut env);
                         if let Err(err) = value {
                             return Err(InterpreterError::StringFormatError(
                                 range.0 + capture_start,
@@ -1084,7 +1153,7 @@ fn eval_format_string(
                         }
 
                         let value = match value.unwrap().borrow() {
-                            Value::String(value) => value.clone(),
+                            ValueData::String(value) => value.clone(),
                             value => EcoString::from(value.to_string()),
                         };
 
@@ -1117,5 +1186,5 @@ fn eval_format_string(
         }
     }
 
-    Ok(Value::String(result.into()))
+    Ok(Arc::new(ValueData::String(result.into())))
 }

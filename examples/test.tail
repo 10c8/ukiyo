@@ -33,35 +33,41 @@
 
 # join (map 99..=0 &beer) "\n"
 
-merge a b ->
-  case (len a) of
-    0 => b
-    _ => case (len b) of
-      0 => a
-      _ => case (lt (head a) (head b)) of
-        true  => [(head a)] ++ (merge (tail a) b)
-        false => [(head b)] ++ (merge a (tail b))
+# merge a b ->
+#   case (len a) of
+#     0 => b
+#     _ => case (len b) of
+#       0 => a
+#       _ => case (lt (head a) (head b)) of
+#         true  => [(head a)] ++ (merge (tail a) b)
+#         false => [(head b)] ++ (merge a (tail b))
 
-mergesort x ->
-  case (lt (len x) 2) of
-    true  => x
-    false =>
-      const h -> div (len x) 2
-      merge (mergesort (take x h)) (mergesort (drop x h))
+# mergesort ns ->
+#   case (lt (len ns) 2) of
+#     true  => ns
+#     false =>
+#       const h -> div (len ns) 2
+#       merge (mergesort (take ns h)) (mergesort (drop ns h))
 
-shuffle ns -> case (lte (len ns) 1) of
-  true  => ns
-  false =>
-    const i -> rand 0 (len ns)
-    const x -> head (drop ns i)
-    const xs -> (take ns i) ++ (drop ns (add i 1))
-    [x] ++ (shuffle xs)
+# shuffle ns -> case (lte (len ns) 1) of
+#   true  => ns
+#   false =>
+#     const i -> rand 0 (sub (len ns) 1)
+#     const x -> head (drop ns i)
+#     const xs -> (take ns i) ++ (drop ns (add i 1))
+#     [x] ++ (shuffle xs)
 
-const shuffled -> shuffle 0..=10
+# const shuffled -> shuffle 0..=10
 
-$~"
+# $~"
 
-before: {{shuffled}}
-after:  {{mergesort shuffled}}
+# before: {{shuffled}}
+# after:  {{mergesort shuffled}}
 
-"~
+# "~
+
+sum a b -> add a b
+
+const add5 -> sum 5
+
+add5 10

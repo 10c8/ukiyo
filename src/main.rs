@@ -4,7 +4,10 @@ mod llm;
 mod parser;
 mod scanner;
 
-use std::time::Instant;
+use std::{
+    sync::{Arc, Mutex},
+    time::Instant,
+};
 
 use codespan_reporting::{
     files::SimpleFiles,
@@ -93,7 +96,7 @@ fn main() {
     };
     let start = Instant::now();
 
-    let mut environment = Environment::new();
+    let mut environment = Arc::new(Mutex::new(Environment::new()));
     // environment.load_stdlib();
 
     let result = ast.eval(&mut environment);

@@ -7,6 +7,7 @@ use regex::Regex;
 use rustc_hash::FxHashMap;
 
 use crate::{
+    interpreter::ValueData,
     llm::{LLMConfig, LLMType, LLM},
     native_arg, native_arg_count, native_fn,
 };
@@ -70,46 +71,50 @@ impl StdLib {
     }
 
     // Debug
-    pub fn std_trace(args: Vec<Arc<Value>>, range: Range) -> IResult {
+    pub fn std_trace(args: Vec<Value>, range: Range) -> IResult {
         native_arg_count!("trace"; args == 1; range);
 
         let value = native_arg!("trace"; args @ 0; range);
 
         println!("[trace] {}", value.to_string());
 
-        Ok(Value::Nil.into())
+        Ok(ValueData::Nil.into())
     }
 
     // Logic
-    pub fn std_eq(args: Vec<Arc<Value>>, range: Range) -> IResult {
+    pub fn std_eq(args: Vec<Value>, range: Range) -> IResult {
         native_arg_count!("eq"; args == 2; range);
 
         let a = native_arg!("eq"; args @ 0; range);
         let b = native_arg!("eq"; args @ 1; range);
 
-        Ok(Value::Boolean(a == b).into())
+        Ok(ValueData::Boolean(a == b).into())
     }
 
-    pub fn std_neq(args: Vec<Arc<Value>>, range: Range) -> IResult {
+    pub fn std_neq(args: Vec<Value>, range: Range) -> IResult {
         native_arg_count!("neq"; args == 2; range);
 
         let a = native_arg!("neq"; args @ 0; range);
         let b = native_arg!("neq"; args @ 1; range);
 
-        Ok(Value::Boolean(a != b).into())
+        Ok(ValueData::Boolean(a != b).into())
     }
 
-    pub fn std_gt(args: Vec<Arc<Value>>, range: Range) -> IResult {
+    pub fn std_gt(args: Vec<Value>, range: Range) -> IResult {
         native_arg_count!("gt"; args == 2; range);
 
         let a = native_arg!("gt"; args @ 0; range);
         let b = native_arg!("gt"; args @ 1; range);
 
         match (a.borrow(), b.borrow()) {
-            (Value::Number(a), Value::Number(b)) => Ok(Value::Boolean(a > b).into()),
-            (Value::String(a), Value::String(b)) => Ok(Value::Boolean(a > b).into()),
-            (Value::List(a), Value::List(b)) => Ok(Value::Boolean(a.len() > b.len()).into()),
-            (Value::Record(a), Value::Record(b)) => Ok(Value::Boolean(a.len() > b.len()).into()),
+            (ValueData::Number(a), ValueData::Number(b)) => Ok(ValueData::Boolean(a > b).into()),
+            (ValueData::String(a), ValueData::String(b)) => Ok(ValueData::Boolean(a > b).into()),
+            (ValueData::List(a), ValueData::List(b)) => {
+                Ok(ValueData::Boolean(a.len() > b.len()).into())
+            }
+            (ValueData::Record(a), ValueData::Record(b)) => {
+                Ok(ValueData::Boolean(a.len() > b.len()).into())
+            }
             _ => {
                 return Err(InterpreterError::NativeFunctionError(
                     format!(
@@ -124,17 +129,21 @@ impl StdLib {
         }
     }
 
-    pub fn std_lt(args: Vec<Arc<Value>>, range: Range) -> IResult {
+    pub fn std_lt(args: Vec<Value>, range: Range) -> IResult {
         native_arg_count!("lt"; args == 2; range);
 
         let a = native_arg!("lt"; args @ 0; range);
         let b = native_arg!("lt"; args @ 1; range);
 
         match (a.borrow(), b.borrow()) {
-            (Value::Number(a), Value::Number(b)) => Ok(Value::Boolean(a < b).into()),
-            (Value::String(a), Value::String(b)) => Ok(Value::Boolean(a < b).into()),
-            (Value::List(a), Value::List(b)) => Ok(Value::Boolean(a.len() < b.len()).into()),
-            (Value::Record(a), Value::Record(b)) => Ok(Value::Boolean(a.len() < b.len()).into()),
+            (ValueData::Number(a), ValueData::Number(b)) => Ok(ValueData::Boolean(a < b).into()),
+            (ValueData::String(a), ValueData::String(b)) => Ok(ValueData::Boolean(a < b).into()),
+            (ValueData::List(a), ValueData::List(b)) => {
+                Ok(ValueData::Boolean(a.len() < b.len()).into())
+            }
+            (ValueData::Record(a), ValueData::Record(b)) => {
+                Ok(ValueData::Boolean(a.len() < b.len()).into())
+            }
             _ => {
                 return Err(InterpreterError::NativeFunctionError(
                     format!(
@@ -149,17 +158,21 @@ impl StdLib {
         }
     }
 
-    pub fn std_gte(args: Vec<Arc<Value>>, range: Range) -> IResult {
+    pub fn std_gte(args: Vec<Value>, range: Range) -> IResult {
         native_arg_count!("gte"; args == 2; range);
 
         let a = native_arg!("gte"; args @ 0; range);
         let b = native_arg!("gte"; args @ 1; range);
 
         match (a.borrow(), b.borrow()) {
-            (Value::Number(a), Value::Number(b)) => Ok(Value::Boolean(a >= b).into()),
-            (Value::String(a), Value::String(b)) => Ok(Value::Boolean(a >= b).into()),
-            (Value::List(a), Value::List(b)) => Ok(Value::Boolean(a.len() >= b.len()).into()),
-            (Value::Record(a), Value::Record(b)) => Ok(Value::Boolean(a.len() >= b.len()).into()),
+            (ValueData::Number(a), ValueData::Number(b)) => Ok(ValueData::Boolean(a >= b).into()),
+            (ValueData::String(a), ValueData::String(b)) => Ok(ValueData::Boolean(a >= b).into()),
+            (ValueData::List(a), ValueData::List(b)) => {
+                Ok(ValueData::Boolean(a.len() >= b.len()).into())
+            }
+            (ValueData::Record(a), ValueData::Record(b)) => {
+                Ok(ValueData::Boolean(a.len() >= b.len()).into())
+            }
             _ => {
                 return Err(InterpreterError::NativeFunctionError(
                     format!(
@@ -174,17 +187,21 @@ impl StdLib {
         }
     }
 
-    pub fn std_lte(args: Vec<Arc<Value>>, range: Range) -> IResult {
+    pub fn std_lte(args: Vec<Value>, range: Range) -> IResult {
         native_arg_count!("lte"; args == 2; range);
 
         let a = native_arg!("lte"; args @ 0; range);
         let b = native_arg!("lte"; args @ 1; range);
 
         match (a.borrow(), b.borrow()) {
-            (Value::Number(a), Value::Number(b)) => Ok(Value::Boolean(a <= b).into()),
-            (Value::String(a), Value::String(b)) => Ok(Value::Boolean(a <= b).into()),
-            (Value::List(a), Value::List(b)) => Ok(Value::Boolean(a.len() <= b.len()).into()),
-            (Value::Record(a), Value::Record(b)) => Ok(Value::Boolean(a.len() <= b.len()).into()),
+            (ValueData::Number(a), ValueData::Number(b)) => Ok(ValueData::Boolean(a <= b).into()),
+            (ValueData::String(a), ValueData::String(b)) => Ok(ValueData::Boolean(a <= b).into()),
+            (ValueData::List(a), ValueData::List(b)) => {
+                Ok(ValueData::Boolean(a.len() <= b.len()).into())
+            }
+            (ValueData::Record(a), ValueData::Record(b)) => {
+                Ok(ValueData::Boolean(a.len() <= b.len()).into())
+            }
             _ => {
                 return Err(InterpreterError::NativeFunctionError(
                     format!(
@@ -200,7 +217,7 @@ impl StdLib {
     }
 
     // Math
-    pub fn std_add(args: Vec<Arc<Value>>, range: Range) -> IResult {
+    pub fn std_add(args: Vec<Value>, range: Range) -> IResult {
         native_arg_count!("add"; args == 2; range);
 
         let a = native_arg!("add"; args @ 0 => Number @ range);
@@ -208,10 +225,10 @@ impl StdLib {
 
         let result = a + b;
 
-        Ok(Value::Number((result as i64) as f64).into())
+        Ok(ValueData::Number((result as i64) as f64).into())
     }
 
-    pub fn std_fadd(args: Vec<Arc<Value>>, range: Range) -> IResult {
+    pub fn std_fadd(args: Vec<Value>, range: Range) -> IResult {
         native_arg_count!("fadd"; args == 2; range);
 
         let a = native_arg!("fadd"; args @ 0 => Number @ range);
@@ -219,10 +236,10 @@ impl StdLib {
 
         let result = a + b;
 
-        Ok(Value::Number(result).into())
+        Ok(ValueData::Number(result).into())
     }
 
-    pub fn std_sub(args: Vec<Arc<Value>>, range: Range) -> IResult {
+    pub fn std_sub(args: Vec<Value>, range: Range) -> IResult {
         native_arg_count!("sub"; args == 2; range);
 
         let a = native_arg!("sub"; args @ 0 => Number @ range);
@@ -230,10 +247,10 @@ impl StdLib {
 
         let result = a - b;
 
-        Ok(Value::Number((result as i64) as f64).into())
+        Ok(ValueData::Number((result as i64) as f64).into())
     }
 
-    pub fn std_fsub(args: Vec<Arc<Value>>, range: Range) -> IResult {
+    pub fn std_fsub(args: Vec<Value>, range: Range) -> IResult {
         native_arg_count!("fsub"; args == 2; range);
 
         let a = native_arg!("fsub"; args @ 0 => Number @ range);
@@ -241,10 +258,10 @@ impl StdLib {
 
         let result = a - b;
 
-        Ok(Value::Number(result).into())
+        Ok(ValueData::Number(result).into())
     }
 
-    pub fn std_mul(args: Vec<Arc<Value>>, range: Range) -> IResult {
+    pub fn std_mul(args: Vec<Value>, range: Range) -> IResult {
         native_arg_count!("mul"; args == 2; range);
 
         let a = native_arg!("mul"; args @ 0 => Number @ range);
@@ -252,10 +269,10 @@ impl StdLib {
 
         let result = a * b;
 
-        Ok(Value::Number((result as i64) as f64).into())
+        Ok(ValueData::Number((result as i64) as f64).into())
     }
 
-    pub fn std_fmul(args: Vec<Arc<Value>>, range: Range) -> IResult {
+    pub fn std_fmul(args: Vec<Value>, range: Range) -> IResult {
         native_arg_count!("fmul"; args == 2; range);
 
         let a = native_arg!("fmul"; args @ 0 => Number @ range);
@@ -263,10 +280,10 @@ impl StdLib {
 
         let result = a * b;
 
-        Ok(Value::Number(result).into())
+        Ok(ValueData::Number(result).into())
     }
 
-    pub fn std_div(args: Vec<Arc<Value>>, range: Range) -> IResult {
+    pub fn std_div(args: Vec<Value>, range: Range) -> IResult {
         native_arg_count!("div"; args == 2; range);
 
         let a = native_arg!("div"; args @ 0 => Number @ range);
@@ -274,10 +291,10 @@ impl StdLib {
 
         let result = a / b;
 
-        Ok(Value::Number((result as i64) as f64).into())
+        Ok(ValueData::Number((result as i64) as f64).into())
     }
 
-    pub fn std_fdiv(args: Vec<Arc<Value>>, range: Range) -> IResult {
+    pub fn std_fdiv(args: Vec<Value>, range: Range) -> IResult {
         native_arg_count!("fdiv"; args == 2; range);
 
         let a = native_arg!("fdiv"; args @ 0 => Number @ range);
@@ -285,77 +302,77 @@ impl StdLib {
 
         let result = a / b;
 
-        Ok(Value::Number(result).into())
+        Ok(ValueData::Number(result).into())
     }
 
-    pub fn std_mod(args: Vec<Arc<Value>>, range: Range) -> IResult {
+    pub fn std_mod(args: Vec<Value>, range: Range) -> IResult {
         native_arg_count!("mod"; args == 2; range);
 
         let a = native_arg!("mod"; args @ 0 => Number @ range);
         let b = native_arg!("mod"; args @ 1 => Number @ range);
 
-        Ok(Value::Number(a % b).into())
+        Ok(ValueData::Number(a % b).into())
     }
 
-    pub fn std_rand(args: Vec<Arc<Value>>, range: Range) -> IResult {
+    pub fn std_rand(args: Vec<Value>, range: Range) -> IResult {
         native_arg_count!("rand"; args == 2; range);
 
         let min = native_arg!("rand"; args @ 0 => Number @ range);
         let max = native_arg!("rand"; args @ 1 => Number @ range);
 
         let mut rng = rand::thread_rng();
-        let result = rng.gen_range(*min..=*max) as i64;
+        let result = rng.gen_range(*min..*max + 1.0) as i64;
 
-        Ok(Value::Number(result as f64).into())
+        Ok(ValueData::Number(result as f64).into())
     }
 
-    pub fn std_frand(args: Vec<Arc<Value>>, range: Range) -> IResult {
+    pub fn std_frand(args: Vec<Value>, range: Range) -> IResult {
         native_arg_count!("randf"; args == 2; range);
 
         let min = native_arg!("randf"; args @ 0 => Number @ range);
         let max = native_arg!("randf"; args @ 1 => Number @ range);
 
         let mut rng = rand::thread_rng();
-        let result = rng.gen_range(*min..=*max);
+        let result = rng.gen_range(*min..*max + 1.0);
 
-        Ok(Value::Number(result).into())
+        Ok(ValueData::Number(result).into())
     }
 
-    pub fn std_lrand(args: Vec<Arc<Value>>, range: Range) -> IResult {
+    pub fn std_lrand(args: Vec<Value>, range: Range) -> IResult {
         native_arg_count!("randl"; args == 1; range);
 
         let list = native_arg!("randl"; args @ 0 => List @ range);
 
         let mut rng = rand::thread_rng();
-        let result = rng.gen_range(0..list.len());
+        let result = rng.gen_range(0..list.len() + 1);
 
         Ok(list[result].clone())
     }
 
     // Strings
-    pub fn std_lines(args: Vec<Arc<Value>>, range: Range) -> IResult {
+    pub fn std_lines(args: Vec<Value>, range: Range) -> IResult {
         native_arg_count!("lines"; args == 1; range);
 
         let value = native_arg!("lines"; args @ 0 => String @ range);
 
         let mut result = Vec::new();
         for line in value.lines() {
-            result.push(Arc::new(Value::String(EcoString::from(line))));
+            result.push(Arc::new(ValueData::String(EcoString::from(line))));
         }
 
-        Ok(Value::List(result.into()).into())
+        Ok(ValueData::List(result.into()).into())
     }
 
     // Collections
-    pub fn std_len(args: Vec<Arc<Value>>, range: Range) -> IResult {
+    pub fn std_len(args: Vec<Value>, range: Range) -> IResult {
         native_arg_count!("len"; args == 1; range);
 
         let value = args.get(0).unwrap();
 
         let result = match value.borrow() {
-            Value::String(value) => value.len(),
-            Value::List(value) => value.len(),
-            Value::Record(value) => value.len(),
+            ValueData::String(value) => value.len(),
+            ValueData::List(value) => value.len(),
+            ValueData::Record(value) => value.len(),
             _ => Err(InterpreterError::TypeMismatch(
                 range,
                 "string, list or record",
@@ -363,10 +380,10 @@ impl StdLib {
             ))?,
         };
 
-        Ok(Value::Number(result as f64).into())
+        Ok(ValueData::Number(result as f64).into())
     }
 
-    pub fn std_join(args: Vec<Arc<Value>>, range: Range) -> IResult {
+    pub fn std_join(args: Vec<Value>, range: Range) -> IResult {
         native_arg_count!("join"; args == 2; range);
 
         let list = native_arg!("join"; args @ 0 => List @ range);
@@ -379,15 +396,15 @@ impl StdLib {
             }
 
             match item.borrow() {
-                Value::String(value) => result.push_str(value),
+                ValueData::String(value) => result.push_str(value),
                 _ => result.push_str(&item.to_string()),
             };
         }
 
-        Ok(Value::String(result.into()).into())
+        Ok(ValueData::String(result.into()).into())
     }
 
-    pub fn std_init(args: Vec<Arc<Value>>, range: Range) -> IResult {
+    pub fn std_init(args: Vec<Value>, range: Range) -> IResult {
         native_arg_count!("init"; args == 1; range);
 
         let mut list = native_arg!("init"; args @ 0 => List @ range).to_owned();
@@ -401,10 +418,10 @@ impl StdLib {
 
         list = list[0..list.len() - 1].to_vec().into();
 
-        Ok(Value::List(list).into())
+        Ok(ValueData::List(list).into())
     }
 
-    pub fn std_last(args: Vec<Arc<Value>>, range: Range) -> IResult {
+    pub fn std_last(args: Vec<Value>, range: Range) -> IResult {
         native_arg_count!("last"; args == 1; range);
 
         let list = native_arg!("last"; args @ 0 => List @ range);
@@ -422,13 +439,13 @@ impl StdLib {
         Ok(last.clone())
     }
 
-    pub fn std_head(args: Vec<Arc<Value>>, range: Range) -> IResult {
+    pub fn std_head(args: Vec<Value>, range: Range) -> IResult {
         native_arg_count!("head"; args == 1; range);
 
         let list = native_arg!("head"; args @ 0; range);
 
         let head = match list.borrow() {
-            Value::String(value) => {
+            ValueData::String(value) => {
                 if value.len() == 0 {
                     return Err(InterpreterError::NativeFunctionError(
                         "head: String is empty.",
@@ -436,11 +453,11 @@ impl StdLib {
                     ));
                 }
 
-                Arc::new(Value::String(EcoString::from(
+                Arc::new(ValueData::String(EcoString::from(
                     value.chars().next().unwrap(),
                 )))
             }
-            Value::List(value) => {
+            ValueData::List(value) => {
                 if value.len() == 0 {
                     return Err(InterpreterError::NativeFunctionError(
                         "head: List is empty.",
@@ -465,7 +482,7 @@ impl StdLib {
         Ok(head)
     }
 
-    pub fn std_tail(args: Vec<Arc<Value>>, range: Range) -> IResult {
+    pub fn std_tail(args: Vec<Value>, range: Range) -> IResult {
         native_arg_count!("tail"; args == 1; range);
 
         let mut list = native_arg!("tail"; args @ 0 => List @ range).to_owned();
@@ -479,10 +496,10 @@ impl StdLib {
 
         list = list[1..list.len()].to_vec().into();
 
-        Ok(Value::List(list).into())
+        Ok(ValueData::List(list).into())
     }
 
-    pub fn std_take(args: Vec<Arc<Value>>, range: Range) -> IResult {
+    pub fn std_take(args: Vec<Value>, range: Range) -> IResult {
         native_arg_count!("take"; args == 2; range);
 
         let list = native_arg!("take"; args @ 0 => List @ range);
@@ -498,10 +515,10 @@ impl StdLib {
 
         let result = list[0..count].to_vec().into();
 
-        Ok(Value::List(result).into())
+        Ok(ValueData::List(result).into())
     }
 
-    pub fn std_drop(args: Vec<Arc<Value>>, range: Range) -> IResult {
+    pub fn std_drop(args: Vec<Value>, range: Range) -> IResult {
         native_arg_count!("drop"; args == 2; range);
 
         let list = native_arg!("drop"; args @ 0 => List @ range);
@@ -517,10 +534,10 @@ impl StdLib {
 
         let result = list[count..list.len()].to_vec().into();
 
-        Ok(Value::List(result).into())
+        Ok(ValueData::List(result).into())
     }
 
-    pub fn std_enumerate(args: Vec<Arc<Value>>, range: Range) -> IResult {
+    pub fn std_enumerate(args: Vec<Value>, range: Range) -> IResult {
         native_arg_count!("enum"; args == 1; range);
 
         let expr = native_arg!("enum"; args @ 0; range);
@@ -528,30 +545,30 @@ impl StdLib {
         let mut result = Vec::new();
 
         match expr.borrow() {
-            Value::String(value) => {
+            ValueData::String(value) => {
                 for (i, c) in value.chars().enumerate() {
-                    result.push(Arc::new(Value::List(
+                    result.push(Arc::new(ValueData::List(
                         vec![
-                            Arc::new(Value::Number(i as f64)),
-                            Arc::new(Value::String(EcoString::from(c))),
+                            Arc::new(ValueData::Number(i as f64)),
+                            Arc::new(ValueData::String(EcoString::from(c))),
                         ]
                         .into(),
                     )));
                 }
             }
-            Value::List(value) => {
+            ValueData::List(value) => {
                 for (i, item) in value.iter().enumerate() {
-                    result.push(Arc::new(Value::List(
-                        vec![Arc::new(Value::Number(i as f64)), item.clone()].into(),
+                    result.push(Arc::new(ValueData::List(
+                        vec![Arc::new(ValueData::Number(i as f64)), item.clone()].into(),
                     )));
                 }
             }
-            Value::Record(value) => {
+            ValueData::Record(value) => {
                 for (i, (key, value)) in value.iter().enumerate() {
-                    result.push(Arc::new(Value::List(
+                    result.push(Arc::new(ValueData::List(
                         vec![
-                            Arc::new(Value::Number(i as f64)),
-                            Arc::new(Value::String(key.clone())),
+                            Arc::new(ValueData::Number(i as f64)),
+                            Arc::new(ValueData::String(key.clone())),
                             value.clone(),
                         ]
                         .into(),
@@ -566,10 +583,10 @@ impl StdLib {
             }
         }
 
-        Ok(Value::List(result.into()).into())
+        Ok(ValueData::List(result.into()).into())
     }
 
-    pub fn std_map(args: Vec<Arc<Value>>, range: Range) -> IResult {
+    pub fn std_map(args: Vec<Value>, range: Range) -> IResult {
         native_arg_count!("map"; args == 2; range);
 
         let list = native_arg!("map"; args @ 0; range);
@@ -578,16 +595,16 @@ impl StdLib {
         let mut result = Vec::new();
 
         match list.borrow() {
-            Value::List(items) => {
+            ValueData::List(items) => {
                 for item in items.iter() {
                     let value = closure.call(vec![item.clone()], None)?;
                     result.push(value);
                 }
             }
-            Value::Record(items) => {
+            ValueData::Record(items) => {
                 for (key, value) in items.iter() {
                     let value = closure.call(
-                        vec![Arc::new(Value::String(key.clone())), value.clone()].into(),
+                        vec![Arc::new(ValueData::String(key.clone())), value.clone()].into(),
                         None,
                     )?;
                     result.push(value);
@@ -601,25 +618,25 @@ impl StdLib {
             }
         };
 
-        Ok(Value::List(result.into()).into())
+        Ok(ValueData::List(result.into()).into())
     }
 
-    pub fn std_list(args: Vec<Arc<Value>>, range: Range) -> IResult {
+    pub fn std_list(args: Vec<Value>, range: Range) -> IResult {
         native_arg_count!("list"; args == 1; range);
 
         let record = native_arg!("list"; args @ 0 => Record @ range);
 
         let mut result = Vec::new();
         for (key, value) in record.iter() {
-            result.push(Arc::new(Value::List(
-                vec![Arc::new(Value::String(key.clone())), value.clone()].into(),
+            result.push(Arc::new(ValueData::List(
+                vec![Arc::new(ValueData::String(key.clone())), value.clone()].into(),
             )));
         }
 
-        Ok(Value::List(result.into()).into())
+        Ok(ValueData::List(result.into()).into())
     }
 
-    pub fn std_record(args: Vec<Arc<Value>>, range: Range) -> IResult {
+    pub fn std_record(args: Vec<Value>, range: Range) -> IResult {
         native_arg_count!("record"; args == 1; range);
 
         let list = native_arg!("record"; args @ 0 => List @ range);
@@ -628,7 +645,7 @@ impl StdLib {
 
         for item in list.iter() {
             match item.borrow() {
-                Value::List(pair) => {
+                ValueData::List(pair) => {
                     if pair.len() != 2 {
                         return Err(InterpreterError::NativeFunctionError(
                             "record: List must contain pairs.",
@@ -640,7 +657,7 @@ impl StdLib {
                     let value = pair[1].clone();
 
                     match key.borrow() {
-                        Value::String(key) => {
+                        ValueData::String(key) => {
                             if !IDENT_RE.is_match(key) {
                                 return Err(InterpreterError::NativeFunctionError(
                                     format!("record: \"{}\" is not a valid identifier.", key)
@@ -668,10 +685,10 @@ impl StdLib {
             }
         }
 
-        Ok(Value::Record(result.into()).into())
+        Ok(ValueData::Record(result.into()).into())
     }
 
-    pub fn std_zip(args: Vec<Arc<Value>>, range: Range) -> IResult {
+    pub fn std_zip(args: Vec<Value>, range: Range) -> IResult {
         native_arg_count!("zip"; args == 2; range);
 
         let list_a = native_arg!("zip"; args @ 0 => List @ range);
@@ -679,13 +696,13 @@ impl StdLib {
 
         let mut result = Vec::new();
         for (item_a, item_b) in list_a.iter().zip(list_b.iter()) {
-            result.push(Value::List(vec![item_a.clone(), item_b.clone()].into()).into());
+            result.push(ValueData::List(vec![item_a.clone(), item_b.clone()].into()).into());
         }
 
-        Ok(Value::List(result.into()).into())
+        Ok(ValueData::List(result.into()).into())
     }
 
-    pub fn std_filter(args: Vec<Arc<Value>>, range: Range) -> IResult {
+    pub fn std_filter(args: Vec<Value>, range: Range) -> IResult {
         native_arg_count!("filter"; args == 2; range);
 
         let list = native_arg!("filter"; args @ 0 => List @ range);
@@ -695,7 +712,7 @@ impl StdLib {
         for item in list.iter() {
             let value = predicate.call(vec![item.clone()], None)?;
             match value.borrow() {
-                Value::Boolean(value) => {
+                ValueData::Boolean(value) => {
                     if *value {
                         result.push(item.clone());
                     }
@@ -710,19 +727,19 @@ impl StdLib {
             }
         }
 
-        Ok(Value::List(result.into()).into())
+        Ok(ValueData::List(result.into()).into())
     }
 
-    pub fn std_has(args: Vec<Arc<Value>>, range: Range) -> IResult {
+    pub fn std_has(args: Vec<Value>, range: Range) -> IResult {
         native_arg_count!("has"; args == 2; range);
 
         let collection = native_arg!("has"; args @ 0; range);
         let value = native_arg!("has"; args @ 1; range);
 
         let result = match collection.borrow() {
-            Value::String(collection) => {
+            ValueData::String(collection) => {
                 let value = match value.borrow() {
-                    Value::String(value) => value,
+                    ValueData::String(value) => value,
                     _ => {
                         return Err(InterpreterError::TypeMismatch(
                             range,
@@ -734,10 +751,10 @@ impl StdLib {
 
                 collection.contains(&value.as_str())
             }
-            Value::List(collection) => collection.contains(value),
-            Value::Record(collection) => {
+            ValueData::List(collection) => collection.contains(value),
+            ValueData::Record(collection) => {
                 let value = match value.borrow() {
-                    Value::String(value) => value,
+                    ValueData::String(value) => value,
                     _ => {
                         return Err(InterpreterError::TypeMismatch(
                             range,
@@ -757,11 +774,11 @@ impl StdLib {
             }
         };
 
-        Ok(Value::Boolean(result).into())
+        Ok(ValueData::Boolean(result).into())
     }
 
     // LLM
-    pub fn std_gen(args: Vec<Arc<Value>>, range: Range) -> IResult {
+    pub fn std_gen(args: Vec<Value>, range: Range) -> IResult {
         native_arg_count!("gen"; args == 2; range);
 
         let prompt = native_arg!("gen"; args @ 0 => String @ range);
@@ -769,7 +786,7 @@ impl StdLib {
 
         let context = if let Some(context) = options.get("ctx") {
             match context.borrow() {
-                Value::String(value) => Some(value.clone()),
+                ValueData::String(value) => Some(value.clone()),
                 _ => None,
             }
         } else {
@@ -778,7 +795,7 @@ impl StdLib {
 
         let max_tokens = if let Some(max_tokens) = options.get("max") {
             match max_tokens.borrow() {
-                Value::Number(value) => Some(*value as usize),
+                ValueData::Number(value) => Some(*value as usize),
                 _ => None,
             }
         } else {
@@ -787,7 +804,7 @@ impl StdLib {
 
         let temperature = if let Some(temperature) = options.get("temp") {
             match temperature.borrow() {
-                Value::Number(value) => Some(*value as f32),
+                ValueData::Number(value) => Some(*value as f32),
                 _ => None,
             }
         } else {
@@ -796,12 +813,12 @@ impl StdLib {
 
         let stop = if let Some(stop) = options.get("stop") {
             match stop.borrow() {
-                Value::List(items) => {
+                ValueData::List(items) => {
                     let mut result = Vec::new();
 
                     for item in items.iter() {
                         match item.borrow() {
-                            Value::String(value) => result.push(value.clone()),
+                            ValueData::String(value) => result.push(value.clone()),
                             _ => {
                                 return Err(InterpreterError::NativeFunctionError(
                                     "gen: Stop must be a list of strings.",
@@ -831,6 +848,6 @@ impl StdLib {
 
         let result = llm.generate(prompt, context, max_tokens, temperature, stop);
 
-        Ok(Value::String(result.into()).into())
+        Ok(ValueData::String(result.into()).into())
     }
 }
