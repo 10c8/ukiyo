@@ -29,7 +29,8 @@ pub enum ValueData {
     Number(f64),
     List(Arc<[Value]>),
     Record(FxHashMap<EcoString, Value>),
-    Closure(Closure),
+    Closure(Arc<Closure>),
+    Partial(Arc<Closure>, Vec<Value>),
     // TODO: Partial application of native functions
     NativeFunction(fn(Vec<Value>, Range) -> IResult),
     Any,
@@ -63,6 +64,7 @@ impl std::fmt::Display for ValueData {
                 write!(f, "}}")
             }
             ValueData::Closure(_) => write!(f, "closure"),
+            ValueData::Partial(_, _) => write!(f, "closure"),
             ValueData::NativeFunction(_) => write!(f, "native function"),
             ValueData::Any => write!(f, "any"),
             ValueData::Nil => write!(f, "nil"),
@@ -78,6 +80,7 @@ fn typeof_value(value: &ValueData) -> &'static str {
         ValueData::List(_) => "list",
         ValueData::Record(_) => "record",
         ValueData::Closure(_) => "closure",
+        ValueData::Partial(_, _) => "closure",
         ValueData::NativeFunction(_) => "native function",
         ValueData::Any => "any",
         ValueData::Nil => "nil",
@@ -199,7 +202,6 @@ pub struct Closure {
     body: AstNode,
     range: Range,
     env: Arc<Mutex<Environment>>,
-    partial_args: Option<Vec<Value>>,
 }
 
 impl PartialEq for Closure {
@@ -216,50 +218,70 @@ impl PartialEq for Closure {
 }
 
 impl Closure {
-    pub fn call(&self, args: Vec<Value>, caller_range: Option<Range>) -> IResult {
-        if args.len() > self.params.len() {
+    pub fn anon_call(&self, args: Vec<Value>, caller_range: Option<Range>) -> IResult {
+        if args.len() != self.params.len() {
+            let caller_range = caller_range.unwrap_or(self.range);
+            let callee_range = if caller_range == self.range {
+                None
+            } else {
+                Some(self.range)
+            };
+
             return Err(InterpreterError::WrongArgumentCount(
-                caller_range.unwrap_or(self.range),
-                None,
+                caller_range,
+                callee_range,
                 self.params.len(),
                 args.len(),
             ));
-        }
-
-        let mut args = args;
-
-        if args.len() < self.params.len() {
-            if let Some(partial_args) = &self.partial_args {
-                let arg_count = args.len() + partial_args.len();
-                if arg_count < self.params.len() {
-                    let caller_range = caller_range.unwrap_or(self.range);
-                    let callee_range = if caller_range == self.range {
-                        None
-                    } else {
-                        Some(self.range)
-                    };
-
-                    return Err(InterpreterError::WrongArgumentCount(
-                        caller_range,
-                        callee_range,
-                        self.params.len(),
-                        arg_count,
-                    ));
-                }
-
-                args.extend(partial_args.clone());
-            } else {
-                let mut closure = self.clone();
-                closure.partial_args = Some(args);
-
-                return Ok(Arc::new(ValueData::Closure(closure)));
-            }
         }
 
         let mut environment = Arc::new(Mutex::new(Environment::new_child(self.env.clone())));
 
         {
             let mut environment = environment.lock().unwrap();
+            for (name, arg) in self.params.iter().zip(args.iter()) {
+                environment.set(name, arg.clone(), self.body.range());
+            }
+        }
+
+        self.body.eval(&mut environment)
+    }
+
+    pub fn call(self: &Arc<Self>, args: Vec<Value>, caller_range: Option<Range>) -> IResult {
+        let caller_range = caller_range.unwrap_or(self.range);
+        let callee_range = if caller_range == self.range {
+            None
+        } else {
+            Some(self.range)
+        };
+
+        if args.len() > self.params.len() {
+            return Err(InterpreterError::WrongArgumentCount(
+                caller_range,
+                callee_range,
+                self.params.len(),
+                args.len(),
+            ));
+        }
+
+        if args.len() < self.params.len() {
+            if args.is_empty() {
+                return Err(InterpreterError::WrongArgumentCount(
+                    caller_range,
+                    callee_range,
+                    self.params.len(),
+                    0,
+                ));
+            }
+
+            return Ok(Arc::new(ValueData::Partial(self.clone(), args)));
+        }
+
+        let mut environment = Arc::new(Mutex::new(Environment::new_child(self.env.clone())));
+
+        {
+            let mut environment = environment.lock().unwrap();
+
             for (name, arg) in self.params.iter().zip(args.iter()) {
                 environment.set(name, arg.clone(), self.body.range());
             }
@@ -559,14 +581,13 @@ impl AstNode {
                     body: *body.clone(),
                     range: id_range,
                     env,
-                    partial_args: None,
                 };
 
                 let value = if *is_const {
                     // TODO: Make it lazy
-                    closure.call(vec![], None)?
+                    closure.anon_call(vec![], None)?
                 } else {
-                    Arc::new(ValueData::Closure(closure))
+                    Arc::new(ValueData::Closure(Arc::new(closure)))
                 };
 
                 environment
@@ -617,10 +638,9 @@ impl AstNode {
                     body: *body.clone(),
                     range: *range,
                     env,
-                    partial_args: None,
                 };
 
-                Ok(Arc::new(ValueData::Closure(closure)))
+                Ok(Arc::new(ValueData::Closure(Arc::new(closure))))
             }
             AstNode::Case { expr, cases, .. } => {
                 let case_expr = expr.eval(environment)?;
@@ -649,10 +669,9 @@ impl AstNode {
                                     body: *body.clone(),
                                     range: body.range(),
                                     env,
-                                    partial_args: None,
                                 };
 
-                                let result = closure.call(vec![case_expr], None)?;
+                                let result = closure.anon_call(vec![case_expr], None)?;
                                 return Ok(result);
                             }
                             CasePatternKind::Literal => {
@@ -691,6 +710,13 @@ impl AstNode {
                         match closure.borrow() {
                             ValueData::Closure(closure) => {
                                 let result = closure.call(args, Some(self.range()))?;
+                                return Ok(result);
+                            }
+                            ValueData::Partial(closure, partial_args) => {
+                                let mut new_args = partial_args.clone();
+                                new_args.extend(args);
+
+                                let result = closure.call(new_args, Some(self.range()))?;
                                 return Ok(result);
                             }
                             _ => {
@@ -865,7 +891,6 @@ impl AstNode {
                     body: body.as_ref().clone(),
                     range: body.range(),
                     env,
-                    partial_args: None,
                 };
 
                 let expr = expr_node.eval(environment)?;
@@ -874,7 +899,7 @@ impl AstNode {
                     ValueData::List(items) => {
                         let mut result = Vec::new();
                         for item in items.iter() {
-                            let value = closure.call(vec![item.clone()], None)?;
+                            let value = closure.anon_call(vec![item.clone()], None)?;
                             result.push(value);
                         }
 
@@ -884,7 +909,7 @@ impl AstNode {
                         let mut result = Vec::new();
                         for item in value.chars() {
                             let value = closure
-                                .call(vec![Arc::new(ValueData::String(item.into()))], None)?;
+                                .anon_call(vec![Arc::new(ValueData::String(item.into()))], None)?;
                             result.push(value);
                         }
 
@@ -1041,6 +1066,13 @@ impl AstNode {
                         let result = closure.call(args, Some(*range))?;
                         return Ok(result);
                     }
+                    ValueData::Partial(closure, partial_args) => {
+                        let mut new_args = partial_args.clone();
+                        new_args.extend(args);
+
+                        let result = closure.call(new_args, Some(*range))?;
+                        return Ok(result);
+                    }
                     ValueData::NativeFunction(method) => {
                         let result = method(args, *range)?;
                         return Ok(result);
@@ -1073,6 +1105,13 @@ impl AstNode {
                 match value.borrow() {
                     ValueData::Closure(closure) => {
                         let result = closure.call(args, Some(*range))?;
+                        return Ok(result);
+                    }
+                    ValueData::Partial(closure, partial_args) => {
+                        let mut new_args = partial_args.clone();
+                        new_args.extend(args);
+
+                        let result = closure.call(new_args, Some(*range))?;
                         return Ok(result);
                     }
                     ValueData::NativeFunction(method) => {

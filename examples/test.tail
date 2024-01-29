@@ -57,12 +57,13 @@
 #     const xs -> (take ns i) ++ (drop ns (add i 1))
 #     [x] ++ (shuffle xs)
 
-# const shuffled -> shuffle 0..=10
+# const shuffled -> shuffle 1..=100
+# const sorted -> mergesort shuffled
 
 # $~"
 
-# before: {{shuffled}}
-# after:  {{mergesort shuffled}}
+# before: {{shuffled}} ({{len shuffled}})
+# after:  {{sorted}} ({{len sorted}})
 
 # "~
 
@@ -70,4 +71,4 @@ sum a b -> add a b
 
 const add5 -> sum 5
 
-add5 10
+(add5 10)
