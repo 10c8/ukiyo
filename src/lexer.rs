@@ -57,7 +57,7 @@ pub enum Token {
     },
     Number {
         // [0-9]+
-        value: i64,
+        value: usize,
         span: Span,
     },
     Symbol {
@@ -389,41 +389,14 @@ impl Lexer {
                             },
                         });
                     } else {
-                        if let Some(num) = self.scanner.peek() {
-                            if num.is_digit(10) {
-                                let mut number = String::new();
-
-                                number.push(*num);
-                                self.scanner.next();
-
-                                while let Some(chr) = self.scanner.peek() {
-                                    if chr.is_digit(10) {
-                                        number.push(*chr);
-                                        self.scanner.next();
-                                    } else {
-                                        break;
-                                    }
-                                }
-
-                                let span = Span {
-                                    line,
-                                    column,
-                                    range: (span_start, self.scanner.cursor()),
-                                };
-
-                                let number = number
-                                    .parse::<i64>()
-                                    .map_err(|_| LexError::NumberOverflow(self.scanner.cursor()))?;
-                                tokens.push(Token::Number {
-                                    value: number,
-                                    span,
-                                });
-                            }
-                        }
+                        return Err(LexError::UnexpectedChar(
+                            "assignment arrow",
+                            self.scanner.cursor(),
+                        ));
                     }
                 }
                 // Number
-                num if num.is_digit(10) | (*num == '-') => {
+                num if num.is_digit(10) => {
                     let mut number = String::new();
 
                     number.push(*num);
@@ -445,7 +418,7 @@ impl Lexer {
                     };
 
                     let number = number
-                        .parse::<i64>()
+                        .parse::<usize>()
                         .map_err(|_| LexError::NumberOverflow(self.scanner.cursor()))?;
                     tokens.push(Token::Number {
                         value: number,
