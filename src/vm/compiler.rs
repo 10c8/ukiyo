@@ -1,4 +1,4 @@
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use ecow::{EcoString, EcoVec};
 
@@ -30,6 +30,7 @@ pub struct CompilerState {
     locals: Vec<Local>,
     scope_depth: usize,
     upvalue_refs: Vec<UpvalueRef>,
+    lambda_id: usize,
 }
 
 impl CompilerState {
@@ -38,6 +39,7 @@ impl CompilerState {
             locals: Vec::new(),
             scope_depth: 0,
             upvalue_refs: Vec::new(),
+            lambda_id: 0,
         }
     }
 }
@@ -106,10 +108,10 @@ impl Compiler {
                 };
 
                 if *is_const {
-                    // Constant functions run once at the time of declaration.
-                    // Later calls will always point to the same value.
+                    // Constant functions run once at the time of declaration, so that
+                    // later calls will always point to the same value
                     self.compile(body, chunk)?;
-                    self.emit_store(name, chunk);
+                    self.emit_store(name, chunk, self.states.last().unwrap().scope_depth);
                 } else {
                     self.emit_closure(Some(&name), params, body, chunk)?;
                 }
@@ -217,9 +219,9 @@ impl Compiler {
         chunk.write(Opcode::LoadGlobal.into(), 1);
     }
 
-    fn emit_store(&mut self, name: EcoString, chunk: &mut Chunk) {
+    fn emit_store(&mut self, name: EcoString, chunk: &mut Chunk, depth: usize) {
         let state = &mut self.states.last_mut().unwrap();
-        if state.scope_depth > 0 {
+        if depth > 0 {
             if state.locals.iter().rposition(|l| l.name == name).is_some() {
                 panic!("redeclaration of local variable {}", name);
             }
@@ -249,6 +251,7 @@ impl Compiler {
         self.states.push(CompilerState::new());
 
         let mut closure_chunk = Chunk::new();
+        let closure_depth = self.states.last().unwrap().scope_depth + 1;
 
         for param in params.iter() {
             let name = match param {
@@ -260,7 +263,7 @@ impl Compiler {
 
             let local = Local {
                 name,
-                depth: closure_state.scope_depth,
+                depth: closure_depth,
                 is_capture: false,
             };
             closure_state.locals.push(local);
@@ -270,9 +273,20 @@ impl Compiler {
 
         closure_chunk.write(Opcode::Return.into(), 1);
 
+        let name = if let Some(name) = name {
+            name.clone()
+        } else {
+            // Anonymous functions get a unique name so they can be distinguished
+            // and captured correctly
+            let last_state = &mut self.states.iter_mut().nth_back(1).unwrap();
+            last_state.lambda_id += 1;
+
+            EcoString::from(format!("<λ {:08x}>", last_state.lambda_id - 1))
+        };
+
         let upvalue_refs = &self.states.last().unwrap().upvalue_refs.clone();
         let closure = Closure {
-            name: name.cloned(),
+            name: name.clone(),
             arity: params.len(),
             chunk: closure_chunk,
             upvalues: Vec::new(),
@@ -287,9 +301,7 @@ impl Compiler {
         chunk.write(Opcode::LoadConstant.into(), 1);
         chunk.write(closure_id as u8, 1);
 
-        if let Some(name) = name {
-            self.emit_store(name.clone(), chunk);
-        }
+        self.emit_store(name, chunk, closure_depth);
 
         // If the function captures any upvalues, we need to turn it into a closure
         if !upvalue_refs.is_empty() {

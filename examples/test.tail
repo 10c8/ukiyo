@@ -138,14 +138,12 @@
 # talk "John" "Doe"
 
 
-# Y f -> (!x -> x &x) (!y -> f (!a -> (y &y) a))
+Y f -> (!x -> x &x) (!y -> f (!a -> (y &y) a))
 
-# test f -> !n -> n
+test f -> !n -> n
 
-# (Y &test) 10
+(Y &test) 10
 
-
-# test -> "test"
 
 # greet one ->
 #   inner two ->
@@ -166,11 +164,22 @@
 # (outer) 0
 
 
-outer ->
-  const pi -> 3.14159
+# outer ->
+#   const pi -> 3.14159
 
-  inner -> pi
+#   middle ->
+#     foo -> "foo"
 
-  &inner
+#     inner ->
+#       test -> !bar -> bar
 
-(outer)
+#       inside ->
+#         baz -> "baz"
+
+#         (test) pi
+
+#     inner
+
+#   middle
+
+# (outer)

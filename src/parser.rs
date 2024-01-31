@@ -942,7 +942,7 @@ impl Parser {
                 | parse_par_func_call, "function call"
         }?;
 
-        let args = many!(0.., self: parse_expr)?;
+        let args = many!(0.., self: parse_func_arg)?;
 
         match id {
             AstNode::FuncRef { .. } => {
@@ -972,6 +972,21 @@ impl Parser {
             args: args.into(),
             range,
         })
+    }
+
+    fn parse_func_arg(&mut self) -> PResult {
+        let arg = self.parse_expr()?;
+
+        let result = match arg {
+            AstNode::Ident { .. } => AstNode::FuncCall {
+                callee: Box::new(arg.clone()),
+                args: EcoVec::new(),
+                range: arg.range(),
+            },
+            _ => arg,
+        };
+
+        Ok(result)
     }
 
     fn parse_par_func_call(&mut self) -> PResult {

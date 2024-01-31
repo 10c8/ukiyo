@@ -57,7 +57,7 @@ impl Into<u8> for Opcode {
 
 #[derive(Debug, Clone)]
 pub struct Closure {
-    name: Option<EcoString>,
+    name: EcoString,
     arity: usize,
     chunk: Chunk,
     upvalues: Vec<Arc<Mutex<Upvalue>>>,
@@ -86,13 +86,10 @@ impl Display for Value {
             Value::Bool(b) => write!(f, "{}", b),
             Value::String(s) => write!(f, "\"{}\"", s),
             Value::Number(n) => write!(f, "{:?}", n),
-            Value::Closure(c) => {
-                if let Some(name) = &c.name {
-                    write!(f, "<fn {}>", name)
-                } else {
-                    write!(f, "<lambda>")
-                }
-            }
+            Value::Closure(c) => match &c.name.chars().nth(0).unwrap() {
+                '<' => write!(f, "{}", c.name),
+                _ => write!(f, "<fn {}>", c.name),
+            },
         }
     }
 }
@@ -157,7 +154,7 @@ impl VM {
     pub fn interpret(&mut self, chunk: Chunk) -> VMResult {
         let frame = CallFrame {
             closure: Arc::new(Mutex::new(Closure {
-                name: None,
+                name: "<program>".into(),
                 arity: 0,
                 chunk,
                 upvalues: Vec::new(),
@@ -291,7 +288,7 @@ impl VM {
                                 let mut line = String::from(format!(
                                     "CLOSURE {} * {:03x}",
                                     value,
-                                    closure.upvalues.len()
+                                    closure.upvalue_refs.len()
                                 ));
 
                                 for upvalue in &closure.upvalue_refs {
@@ -626,7 +623,7 @@ impl VM {
             }
         };
 
-        println!(">>> CLOSURE {}", value);
+        // println!(">>> CLOSURE {}", value);
 
         if let Value::Closure(closure) = value.as_ref() {
             let mut closure = (**closure).clone();
@@ -677,20 +674,26 @@ impl VM {
                         };
                         let upvalue = Arc::new(Mutex::new(upvalue));
 
-                        println!(
-                            "    capturing LOCAL {:03} (offset: {}) = {}",
-                            idx as u8, frame.offset, value
-                        );
+                        // println!(
+                        //     "    capture LOCAL {:03} (offset: {}) = {}",
+                        //     idx as u8, frame.offset, value
+                        // );
 
                         closure.upvalues.push(upvalue.clone());
                         self.open_upvalues.push(upvalue.clone());
                     }
                 } else {
-                    println!(
-                        "    capturing UPVAL {} = {}",
-                        idx as u8,
-                        self.stack.get(idx as usize).unwrap()
-                    );
+                    // println!(
+                    //     "    ref UPVAL {} = {}",
+                    //     idx as u8,
+                    //     frame_closure
+                    //         .upvalues
+                    //         .get(idx as usize)
+                    //         .unwrap()
+                    //         .lock()
+                    //         .unwrap()
+                    //         .value,
+                    // );
 
                     let u = frame_closure.upvalues.get(idx as usize).unwrap();
                     closure.upvalues.push(u.clone());
