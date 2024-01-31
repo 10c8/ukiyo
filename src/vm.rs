@@ -10,7 +10,8 @@ use chunk::Chunk;
 use ecow::EcoString;
 use once_cell::sync::Lazy;
 use rustc_hash::FxHashMap;
-use serde::de::value;
+
+use self::compiler::UpvalueRef;
 
 #[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -20,14 +21,16 @@ pub enum Opcode {
     StoreGlobal,
     LoadLocal,
     LoadGlobal,
+    LoadUpvalue,
     LoadNil,
     LoadTrue,
     LoadFalse,
     LoadZero,
     LoadOne,
+    LoadTwo,
     LoadMinusOne,
-    CallLocal,
-    CallGlobal,
+    Call,
+    Closure,
     Push,
     Pop,
     Negate,
@@ -54,9 +57,11 @@ impl Into<u8> for Opcode {
 
 #[derive(Debug, Clone)]
 pub struct Closure {
-    name: EcoString,
+    name: Option<EcoString>,
     arity: usize,
     chunk: Chunk,
+    upvalues: Vec<Arc<Mutex<Upvalue>>>,
+    upvalue_refs: Vec<UpvalueRef>,
 }
 
 impl PartialEq for Closure {
@@ -81,55 +86,40 @@ impl Display for Value {
             Value::Bool(b) => write!(f, "{}", b),
             Value::String(s) => write!(f, "\"{}\"", s),
             Value::Number(n) => write!(f, "{:?}", n),
-            Value::Closure(c) => write!(f, "<fn {}:{}>", c.name, c.arity),
+            Value::Closure(c) => {
+                if let Some(name) = &c.name {
+                    write!(f, "<fn {}>", name)
+                } else {
+                    write!(f, "<lambda>")
+                }
+            }
         }
-    }
-}
-
-pub struct Stack {
-    stack: Vec<Arc<Value>>,
-}
-
-impl Stack {
-    pub fn new() -> Stack {
-        Stack { stack: Vec::new() }
-    }
-
-    pub fn push(&mut self, value: Arc<Value>) {
-        self.stack.push(value);
-    }
-
-    pub fn pop(&mut self) -> Option<Arc<Value>> {
-        self.stack.pop()
-    }
-
-    pub fn peek(&self, n: usize) -> Option<&Arc<Value>> {
-        self.stack.get(n)
-    }
-}
-
-impl Display for Stack {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        write!(f, "[STACK]\n")?;
-
-        for value in self.stack.iter() {
-            write!(f, "{}\n", value)?;
-        }
-
-        Ok(())
     }
 }
 
 pub struct CallFrame {
     closure: Arc<Mutex<Closure>>,
     pc: usize,
-    base: usize,
+    offset: usize,
 }
 
 impl CallFrame {
     pub fn get_closure(&self) -> &Arc<Mutex<Closure>> {
         &self.closure
     }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum UpvalueKind {
+    Open,
+    Closed,
+}
+
+#[derive(Debug, Clone)]
+pub struct Upvalue {
+    pub kind: UpvalueKind,
+    pub slot: Option<usize>,
+    pub value: Arc<Value>,
 }
 
 #[derive(Debug)]
@@ -144,32 +134,37 @@ static TRUE_VALUE: Lazy<Arc<Value>> = Lazy::new(|| Arc::new(Value::Bool(true)));
 static FALSE_VALUE: Lazy<Arc<Value>> = Lazy::new(|| Arc::new(Value::Bool(false)));
 static ZERO_VALUE: Lazy<Arc<Value>> = Lazy::new(|| Arc::new(Value::Number(0.0)));
 static ONE_VALUE: Lazy<Arc<Value>> = Lazy::new(|| Arc::new(Value::Number(1.0)));
+static TWO_VALUE: Lazy<Arc<Value>> = Lazy::new(|| Arc::new(Value::Number(2.0)));
 static MINUS_ONE_VALUE: Lazy<Arc<Value>> = Lazy::new(|| Arc::new(Value::Number(-1.0)));
 
 pub struct VM {
     frames: Vec<CallFrame>,
-    pub stack: Stack,
+    stack: Vec<Arc<Value>>,
     globals: FxHashMap<EcoString, Arc<Value>>,
+    open_upvalues: Vec<Arc<Mutex<Upvalue>>>,
 }
 
 impl VM {
     pub fn new() -> VM {
         VM {
             frames: Vec::new(),
-            stack: Stack::new(),
+            stack: Vec::new(),
             globals: FxHashMap::default(),
+            open_upvalues: Vec::new(),
         }
     }
 
     pub fn interpret(&mut self, chunk: Chunk) -> VMResult {
         let frame = CallFrame {
             closure: Arc::new(Mutex::new(Closure {
-                name: "prog".into(),
+                name: None,
                 arity: 0,
                 chunk,
+                upvalues: Vec::new(),
+                upvalue_refs: Vec::new(),
             })),
             pc: 0,
-            base: 0,
+            offset: 0,
         };
         self.frames.push(frame);
 
@@ -179,20 +174,171 @@ impl VM {
     fn run(&mut self) -> VMResult {
         loop {
             if let Some(op) = self.read_byte() {
+                {
+                    let frame = self.frames.last().unwrap();
+                    let closure = frame.get_closure().lock().unwrap();
+                    let chunk = &closure.chunk;
+                    let pc = frame.pc;
+
+                    let mut data = EcoString::from(format!(".. .. .. {:02x}", op as u8));
+
+                    let instruction = match op {
+                        Opcode::LoadConstant => {
+                            if let Some(idx) = chunk.read(pc) {
+                                if let Some(value) = chunk.get_constant(*idx as usize) {
+                                    data = format!(".. .. {:02x} {:02x}", op as u8, idx).into();
+
+                                    format!("LOAD_CONST {:08} = {}", idx, value)
+                                } else {
+                                    panic!("unknown constant");
+                                }
+                            } else {
+                                panic!("missing constant id");
+                            }
+                        }
+                        Opcode::LoadConstantLong => {
+                            let idx_lo = chunk.read(pc);
+                            let idx_md = chunk.read(pc + 1);
+                            let idx_hi = chunk.read(pc + 2);
+
+                            let idx = if let (Some(idx_lo), Some(idx_md), Some(idx_hi)) =
+                                (idx_lo, idx_md, idx_hi)
+                            {
+                                data = format!(
+                                    "{:02x} {:02x} {:02x} {:02x}",
+                                    op as u8, idx_lo, idx_md, idx_hi
+                                )
+                                .into();
+
+                                (*idx_lo as usize)
+                                    | ((*idx_md as usize) << 8)
+                                    | ((*idx_hi as usize) << 16)
+                            } else {
+                                panic!("missing constant id");
+                            };
+
+                            if let Some(value) = chunk.get_constant(idx) {
+                                format!("LOAD_CONST {:08} = {}", idx, value)
+                            } else {
+                                panic!("unknown constant: {}", idx);
+                            }
+                        }
+                        Opcode::StoreGlobal => "ST_GLOBAL".to_string(),
+                        Opcode::LoadLocal => {
+                            if let Some(idx) = chunk.read(pc) {
+                                data = format!(".. .. {:02x} {:02x}", op as u8, idx).into();
+
+                                let value = self.stack.get(frame.offset + *idx as usize).unwrap();
+                                format!("LD_LOCAL {} = {}", idx, value)
+                            } else {
+                                panic!("missing local id");
+                            }
+                        }
+                        Opcode::LoadGlobal => "LD_GLOBAL".to_string(),
+                        Opcode::LoadUpvalue => {
+                            if let Some(idx) = chunk.read(pc) {
+                                data = format!(".. .. {:02x} {:02x}", op as u8, idx).into();
+
+                                let upvalue =
+                                    closure.upvalues.get(*idx as usize).unwrap().lock().unwrap();
+                                match upvalue.kind {
+                                    UpvalueKind::Open => {
+                                        let slot = upvalue.slot.unwrap();
+                                        let value = self.stack.get(slot).unwrap();
+                                        format!("LD_UPVAL {} = {}", idx, value)
+                                    }
+                                    UpvalueKind::Closed => {
+                                        let value = upvalue.value.clone();
+                                        format!("LD_UPVAL {} = {}", idx, value)
+                                    }
+                                }
+                            } else {
+                                panic!("missing upvalue id");
+                            }
+                        }
+                        Opcode::LoadZero => "LOAD_ZERO".to_string(),
+                        Opcode::LoadOne => "LOAD_ONE".to_string(),
+                        Opcode::LoadTwo => "LOAD_TWO".to_string(),
+                        Opcode::LoadMinusOne => "LOAD_MINUS_ONE".to_string(),
+                        Opcode::LoadNil => "LOAD_NIL".to_string(),
+                        Opcode::LoadTrue => "LOAD_TRUE".to_string(),
+                        Opcode::LoadFalse => "LOAD_FALSE".to_string(),
+                        Opcode::Call => {
+                            if let Some(argc) = chunk.read(pc) {
+                                data = format!(".. .. {:02x} {:02x}", op as u8, argc).into();
+
+                                format!("CALL {}", argc)
+                            } else {
+                                panic!("missing argument count");
+                            }
+                        }
+                        Opcode::Closure => {
+                            let idx = if let Some(idx) = chunk.read(pc) {
+                                *idx as usize
+                            } else {
+                                panic!("missing constant id");
+                            };
+
+                            let value = if let Some(value) = chunk.get_constant(idx) {
+                                value.clone()
+                            } else {
+                                panic!("unknown constant");
+                            };
+
+                            if let Value::Closure(closure) = value.as_ref() {
+                                data = format!(".. .. .. {:02x}", op as u8).into();
+
+                                let mut line = String::from(format!(
+                                    "CLOSURE {} * {:03x}",
+                                    value,
+                                    closure.upvalues.len()
+                                ));
+
+                                for upvalue in &closure.upvalue_refs {
+                                    line.push_str(&format!(
+                                        "\n                     |  {} {:03x}",
+                                        if upvalue.is_local { "LOCAL" } else { "UPVAL" },
+                                        upvalue.index
+                                    ));
+                                }
+
+                                line
+                            } else {
+                                panic!("invalid closure");
+                            }
+                        }
+                        Opcode::Push => "PUSH".to_string(),
+                        Opcode::Pop => "POP".to_string(),
+                        Opcode::Negate => "NEG".to_string(),
+                        Opcode::Add => "ADD".to_string(),
+                        Opcode::Multiply => "MUL".to_string(),
+                        Opcode::Divide => "DIV".to_string(),
+                        Opcode::Subtract => "SUB".to_string(),
+                        Opcode::Return => "RET".to_string(),
+                        _ => todo!(),
+                    };
+
+                    let line = chunk.get_line(pc).unwrap();
+
+                    println!("{:#04}  {:04} {}  {}", pc, line, data, instruction);
+                }
+
                 match op {
                     Opcode::LoadConstant => self.op_ld_const(false)?,
                     Opcode::LoadConstantLong => self.op_ld_const(true)?,
                     Opcode::StoreGlobal => self.op_st_global()?,
                     Opcode::LoadLocal => self.op_ld_local()?,
                     Opcode::LoadGlobal => self.op_ld_global()?,
+                    Opcode::LoadUpvalue => self.op_ld_upval()?,
                     Opcode::LoadNil => self.stack.push(NIL_VALUE.clone()),
                     Opcode::LoadTrue => self.stack.push(TRUE_VALUE.clone()),
                     Opcode::LoadFalse => self.stack.push(FALSE_VALUE.clone()),
                     Opcode::LoadZero => self.stack.push(ZERO_VALUE.clone()),
                     Opcode::LoadOne => self.stack.push(ONE_VALUE.clone()),
+                    Opcode::LoadTwo => self.stack.push(TWO_VALUE.clone()),
                     Opcode::LoadMinusOne => self.stack.push(MINUS_ONE_VALUE.clone()),
-                    Opcode::CallLocal => self.op_call_local()?,
-                    Opcode::CallGlobal => self.op_call_global()?,
+                    Opcode::Call => self.op_call()?,
+                    Opcode::Closure => self.op_closure()?,
                     Opcode::Push => self.op_push()?,
                     Opcode::Pop => self.op_pop()?,
                     Opcode::Negate => self.op_neg()?,
@@ -201,11 +347,19 @@ impl VM {
                     Opcode::Multiply => self.op_mul()?,
                     Opcode::Divide => self.op_div()?,
                     Opcode::Return => {
-                        self.frames.pop();
+                        let result = self.stack.pop().unwrap_or(NIL_VALUE.clone());
+
+                        self.close_upvalues(self.frames.last().unwrap().offset);
+
+                        let frame = self.frames.pop().unwrap();
 
                         if self.frames.is_empty() {
-                            break;
+                            println!("\n>>> RESULT = {}", result);
+                            return Ok(());
                         }
+
+                        self.stack.truncate(frame.offset);
+                        self.stack.push(result);
                     }
                     _ => todo!("unknown opcode: {:?}", op),
                 }
@@ -235,6 +389,63 @@ impl VM {
         }
 
         op
+    }
+
+    fn call_value(&mut self, callee: &Arc<Value>, argc: usize) {
+        match callee.as_ref() {
+            Value::Closure(closure) => {
+                if argc != closure.arity {
+                    panic!(
+                        "call_value: expected {} arguments, got {}",
+                        closure.arity, argc
+                    );
+                }
+
+                let frame = CallFrame {
+                    closure: Arc::new(Mutex::new(closure.as_ref().clone())),
+                    pc: 0,
+                    offset: (self.stack.len() as isize - argc as isize) as usize,
+                };
+
+                self.frames.push(frame);
+            }
+            _ => {
+                if argc > 0 {
+                    panic!("call_value: value is not callable ({})", callee);
+                }
+
+                self.stack.push(callee.clone());
+            }
+        }
+    }
+
+    fn close_upvalues(&mut self, last: usize) {
+        let mut i = self.open_upvalues.len() as isize;
+        loop {
+            if i < 1 {
+                break;
+            }
+
+            let mut u = self
+                .open_upvalues
+                .get(i as usize - 1)
+                .unwrap()
+                .lock()
+                .unwrap();
+
+            let slot = u.slot.unwrap();
+            if slot < last {
+                break;
+            }
+
+            (*u).kind = UpvalueKind::Closed;
+            (*u).slot = None;
+            (*u).value = self.stack.get(slot).unwrap().clone();
+
+            i -= 1;
+        }
+
+        self.open_upvalues.truncate(i as usize);
     }
 
     // LD_CONST <id: u8>
@@ -303,10 +514,16 @@ impl VM {
     // LD_LOCAL <idx: u8>
     fn op_ld_local(&mut self) -> VMResult {
         if let Some(idx) = self.read_byte() {
-            if let Some(value) = self.stack.peek(idx as usize) {
+            let frame = self.frames.last().unwrap();
+
+            if let Some(value) = self.stack.get(frame.offset + idx as usize) {
+                // println!("id: {} (offset: {})", idx as usize, frame.offset);
+
                 self.stack.push(value.clone());
                 return Ok(());
             } else {
+                println!("id: {} (offset: {})", idx as usize, frame.offset);
+
                 println!("ld_local: undefined variable");
                 return Err(VMError::RuntimeError);
             }
@@ -329,10 +546,7 @@ impl VM {
                         return Err(VMError::RuntimeError);
                     }
                 }
-                _ => {
-                    println!("ld_global: variable name must be a string");
-                    return Err(VMError::RuntimeError);
-                }
+                _ => unreachable!(),
             }
         }
 
@@ -340,77 +554,156 @@ impl VM {
         Err(VMError::RuntimeError)
     }
 
-    // CALL_LOCAL
-    fn op_call_local(&mut self) -> VMResult {
-        if let Some(id) = self.read_byte() {
-            if let Some(closure) = self.stack.peek(id as usize) {
-                if let Value::Closure(closure) = closure.as_ref() {
-                    let frame = CallFrame {
-                        closure: Arc::new(Mutex::new(closure.as_ref().clone())),
-                        pc: 0,
-                        base: self.stack.stack.len() - (id as usize) - 1,
-                    };
-                    self.frames.push(frame);
+    // LD_UPVAL <idx: u8>
+    fn op_ld_upval(&mut self) -> VMResult {
+        if let Some(idx) = self.read_byte() {
+            let frame = self.frames.last().unwrap();
+            let closure = frame.get_closure().lock().unwrap();
 
-                    return Ok(());
-                } else {
-                    println!("call_local: value is not a function");
-                    return Err(VMError::RuntimeError);
-                }
-            } else {
-                println!("call_local: undefined function");
-                return Err(VMError::RuntimeError);
+            if let Some(upvalue) = closure.upvalues.get(idx as usize) {
+                let upvalue = upvalue.lock().unwrap();
+                let value = match upvalue.kind {
+                    UpvalueKind::Open => {
+                        let slot = upvalue.slot.unwrap();
+                        self.stack.get(slot).unwrap().clone()
+                    }
+                    UpvalueKind::Closed => upvalue.value.clone(),
+                };
+
+                self.stack.push(value.clone());
+                return Ok(());
             }
+
+            println!("ld_upval: undefined variable");
+            return Err(VMError::RuntimeError);
         }
 
-        println!("call_local: unknown function");
+        println!("ld_upval: invalid index");
         Err(VMError::RuntimeError)
     }
 
-    // CALL_GLOBAL
-    fn op_call_global(&mut self) -> VMResult {
-        if let Some(name) = self.stack.pop() {
-            match name.as_ref() {
-                Value::String(name) => {
-                    if name == "print" {
-                        if let Some(name) = self.stack.pop() {
-                            println!(">>> CALL print {}", name);
-                            self.stack.push(NIL_VALUE.clone());
+    // CALL <argc: u8>
+    fn op_call(&mut self) -> VMResult {
+        let argc = if let Some(argc) = self.read_byte() {
+            argc as usize
+        } else {
+            println!("call: argument count expected");
+            return Err(VMError::RuntimeError);
+        };
 
-                            return Ok(());
-                        } else {
-                            println!("call_global: missing argument");
-                            return Err(VMError::RuntimeError);
-                        }
-                    } else {
-                        if let Some(value) = self.globals.get(name) {
-                            match value.as_ref() {
-                                Value::Closure(closure) => {
-                                    let frame = CallFrame {
-                                        closure: Arc::new(Mutex::new(closure.as_ref().clone())),
-                                        pc: 0,
-                                        base: self.stack.stack.len(),
-                                    };
-                                    self.frames.push(frame);
+        let callee = if let Some(callee) = self.stack.pop() {
+            callee.clone()
+        } else {
+            println!("call: value expected");
+            return Err(VMError::RuntimeError);
+        };
 
-                                    return Ok(());
-                                }
-                                _ => {
-                                    self.stack.push(value.clone());
-                                    return Ok(());
-                                }
-                            }
-                        } else {
-                            println!("call_global: undefined function");
-                            return Err(VMError::RuntimeError);
-                        }
-                    }
-                }
-                _ => panic!("call_global: function name must be a string"),
+        // println!(">>> CALL {}:{}", callee, argc);
+
+        self.call_value(&callee, argc);
+
+        return Ok(());
+    }
+
+    // CLOSURE
+    fn op_closure(&mut self) -> VMResult {
+        let closure_id = if let Some(closure_id) = self.read_byte() {
+            closure_id as usize
+        } else {
+            println!("closure: missing constant id");
+            return Err(VMError::RuntimeError);
+        };
+
+        let value = {
+            let frame = self.frames.last().unwrap();
+            let chunk = &frame.get_closure().lock().unwrap().chunk;
+
+            if let Some(value) = chunk.get_constant(closure_id) {
+                value.clone()
+            } else {
+                println!("closure: unknown constant");
+                return Err(VMError::RuntimeError);
             }
+        };
+
+        println!(">>> CLOSURE {}", value);
+
+        if let Value::Closure(closure) = value.as_ref() {
+            let mut closure = (**closure).clone();
+
+            for _ in 0..closure.upvalue_refs.len() {
+                let idx = if let Some(idx) = self.read_byte() {
+                    idx
+                } else {
+                    println!("closure: missing upval index");
+                    return Err(VMError::RuntimeError);
+                };
+
+                let is_local = if let Some(is_local) = self.read_byte() {
+                    is_local as u8 == 1
+                } else {
+                    println!("closure: missing upval type");
+                    return Err(VMError::RuntimeError);
+                };
+
+                let frame = self.frames.last().unwrap();
+                let frame_closure = frame.get_closure().lock().unwrap();
+
+                if is_local {
+                    if self
+                        .open_upvalues
+                        .iter()
+                        .rfind(|u| {
+                            let u = u.lock().unwrap();
+                            u.kind == UpvalueKind::Open
+                                && u.slot.unwrap() == frame.offset + idx as usize
+                        })
+                        .is_none()
+                    {
+                        let value = if let Some(value) = self.stack.get(frame.offset + idx as usize)
+                        {
+                            value
+                        } else {
+                            println!("closure: undefined variable");
+                            println!("idx: {} (offset: {})", idx as usize, frame.offset);
+
+                            return Err(VMError::RuntimeError);
+                        };
+
+                        let upvalue = Upvalue {
+                            kind: UpvalueKind::Open,
+                            slot: Some(frame.offset + idx as usize),
+                            value: value.clone(),
+                        };
+                        let upvalue = Arc::new(Mutex::new(upvalue));
+
+                        println!(
+                            "    capturing LOCAL {:03} (offset: {}) = {}",
+                            idx as u8, frame.offset, value
+                        );
+
+                        closure.upvalues.push(upvalue.clone());
+                        self.open_upvalues.push(upvalue.clone());
+                    }
+                } else {
+                    println!(
+                        "    capturing UPVAL {} = {}",
+                        idx as u8,
+                        self.stack.get(idx as usize).unwrap()
+                    );
+
+                    let u = frame_closure.upvalues.get(idx as usize).unwrap();
+                    closure.upvalues.push(u.clone());
+                }
+            }
+
+            self.stack.pop();
+            self.stack.push(Value::Closure(closure.into()).into());
+
+            return Ok(());
         }
 
-        println!("call_global: invalid function name");
+        println!("closure: invalid closure");
         Err(VMError::RuntimeError)
     }
 

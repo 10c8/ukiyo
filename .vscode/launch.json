@@ -7,15 +7,15 @@
         {
             "type": "lldb",
             "request": "launch",
-            "name": "Debug executable 'ukiyo'",
+            "name": "Debug executable 'tail'",
             "cargo": {
                 "args": [
                     "build",
-                    "--bin=ukiyo",
-                    "--package=ukiyo"
+                    "--bin=tail",
+                    "--package=tail"
                 ],
                 "filter": {
-                    "name": "ukiyo",
+                    "name": "tail",
                     "kind": "bin"
                 }
             },
@@ -25,16 +25,16 @@
         {
             "type": "lldb",
             "request": "launch",
-            "name": "Debug unit tests in executable 'ukiyo'",
+            "name": "Debug unit tests in executable 'tail'",
             "cargo": {
                 "args": [
                     "test",
                     "--no-run",
-                    "--bin=ukiyo",
-                    "--package=ukiyo"
+                    "--bin=tail",
+                    "--package=tail"
                 ],
                 "filter": {
-                    "name": "ukiyo",
+                    "name": "tail",
                     "kind": "bin"
                 }
             },

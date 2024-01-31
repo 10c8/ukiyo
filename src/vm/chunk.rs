@@ -42,10 +42,6 @@ impl Chunk {
         self.lines.push(LineInfo { line, count: 1 });
     }
 
-    pub fn pop(&mut self) {
-        self.code.pop();
-    }
-
     pub fn read(&self, pc: usize) -> Option<&u8> {
         self.code.get(pc)
     }
@@ -65,16 +61,16 @@ impl Chunk {
     }
 
     pub fn add_constant(&mut self, value: Arc<Value>) -> usize {
-        if let Some(id) = self.find_constant(&value) {
-            return id;
+        if let Some(idx) = self.find_constant(&value) {
+            return idx;
         }
 
         self.constants.push(value);
         self.constants.len() - 1
     }
 
-    pub fn get_constant(&self, id: usize) -> Option<&Arc<Value>> {
-        self.constants.get(id)
+    pub fn get_constant(&self, idx: usize) -> Option<&Arc<Value>> {
+        self.constants.get(idx)
     }
 
     fn find_constant(&self, value: &Arc<Value>) -> Option<usize> {
@@ -91,71 +87,115 @@ impl Display for Chunk {
 
         writeln!(f, "[CODE]")?;
         while let Some((i, op)) = code.next() {
-            data = format!(".. .. .. {:#02}", op).into();
+            data = format!(".. .. .. {:02x}", op).into();
 
             let instruction = match Opcode::from(*op) {
                 Opcode::LoadConstant => {
-                    if let Some((_, id)) = code.next() {
-                        if let Some(value) = self.constants.get(*id as usize) {
-                            data = format!(".. .. {:#02} {:#02}", op, id).into();
+                    if let Some((_, idx)) = code.next() {
+                        if let Some(value) = self.constants.get(*idx as usize) {
+                            data = format!(".. .. {:02x} {:02x}", op, idx).into();
 
-                            format!("LOAD_CONST {:08} = {}", id, value)
+                            format!("LOAD_CONST {:08} = {}", idx, value)
                         } else {
                             panic!("unknown constant");
                         }
                     } else {
-                        panic!("missing constant id");
+                        panic!("missing constant idx");
                     }
                 }
                 Opcode::LoadConstantLong => {
-                    let id_lo = code.next();
-                    let id_md = code.next();
-                    let id_hi = code.next();
+                    let idx_lo = code.next();
+                    let idx_md = code.next();
+                    let idx_hi = code.next();
 
-                    let id = if let (Some((_, id_lo)), Some((_, id_md)), Some((_, id_hi))) =
-                        (id_lo, id_md, id_hi)
+                    let idx = if let (Some((_, idx_lo)), Some((_, idx_md)), Some((_, idx_hi))) =
+                        (idx_lo, idx_md, idx_hi)
                     {
-                        data =
-                            format!("{:#02} {:#02} {:#02} {:#02}", op, id_lo, id_md, id_hi).into();
+                        data = format!("{:02x} {:02x} {:02x} {:02x}", op, idx_lo, idx_md, idx_hi)
+                            .into();
 
-                        (*id_lo as usize) | ((*id_md as usize) << 8) | ((*id_hi as usize) << 16)
+                        (*idx_lo as usize) | ((*idx_md as usize) << 8) | ((*idx_hi as usize) << 16)
                     } else {
-                        panic!("missing constant id");
+                        panic!("missing constant idx");
                     };
 
-                    if let Some(value) = self.constants.get(id) {
-                        format!("LOAD_CONST {:08} = {}", id, value)
+                    if let Some(value) = self.constants.get(idx) {
+                        format!("LOAD_CONST {:08} = {}", idx, value)
                     } else {
-                        panic!("unknown constant");
+                        panic!("unknown constant: {}", idx);
                     }
                 }
                 Opcode::StoreGlobal => "ST_GLOBAL".to_string(),
                 Opcode::LoadLocal => {
-                    if let Some((_, id)) = code.next() {
-                        data = format!(".. .. {:#02} {:#02}", op, id).into();
+                    if let Some((_, idx)) = code.next() {
+                        data = format!(".. .. {:02x} {:02x}", op, idx).into();
 
-                        format!("LD_LOCAL {}", id)
+                        format!("LD_LOCAL {}", idx)
                     } else {
-                        panic!("missing local id");
+                        panic!("missing local idx");
                     }
                 }
                 Opcode::LoadGlobal => "LD_GLOBAL".to_string(),
+                Opcode::LoadUpvalue => {
+                    if let Some((_, idx)) = code.next() {
+                        data = format!(".. .. {:02x} {:02x}", op, idx).into();
+
+                        format!("LD_UPVAL {}", idx)
+                    } else {
+                        panic!("missing upvalue idx");
+                    }
+                }
                 Opcode::LoadZero => "LOAD_ZERO".to_string(),
                 Opcode::LoadOne => "LOAD_ONE".to_string(),
+                Opcode::LoadTwo => "LOAD_TWO".to_string(),
                 Opcode::LoadMinusOne => "LOAD_MINUS_ONE".to_string(),
                 Opcode::LoadNil => "LOAD_NIL".to_string(),
                 Opcode::LoadTrue => "LOAD_TRUE".to_string(),
                 Opcode::LoadFalse => "LOAD_FALSE".to_string(),
-                Opcode::CallLocal => {
-                    if let Some((_, id)) = code.next() {
-                        data = format!(".. .. {:#02} {:#02}", op, id).into();
+                Opcode::Call => {
+                    if let Some((_, argc)) = code.next() {
+                        data = format!(".. .. {:02x} {:02x}", op, argc).into();
 
-                        format!("CALL_LOCAL {}", id)
+                        format!("CALL {}", argc)
                     } else {
-                        panic!("missing local id");
+                        panic!("missing argument count");
                     }
                 }
-                Opcode::CallGlobal => "CALL_GLOBAL".to_string(),
+                Opcode::Closure => {
+                    let idx = if let Some((idx, _)) = code.next() {
+                        idx as usize
+                    } else {
+                        panic!("missing closure id");
+                    };
+
+                    let value = if let Some(value) = self.get_constant(idx) {
+                        value.clone()
+                    } else {
+                        panic!("unknown closure");
+                    };
+
+                    if let Value::Closure(closure) = value.as_ref() {
+                        data = format!(".. .. .. {:02x}", op).into();
+
+                        let mut line = String::from(format!(
+                            "CLOSURE {} * {:03x}",
+                            value,
+                            closure.upvalues.len()
+                        ));
+
+                        for upvalue in &closure.upvalue_refs {
+                            line.push_str(&format!(
+                                "\n                     |  {} {:03x}",
+                                if upvalue.is_local { "LOCAL" } else { "UPVAL" },
+                                upvalue.index
+                            ));
+                        }
+
+                        line
+                    } else {
+                        panic!("invalid closure");
+                    }
+                }
                 Opcode::Push => "PUSH".to_string(),
                 Opcode::Pop => "POP".to_string(),
                 Opcode::Negate => "NEG".to_string(),
@@ -179,8 +219,8 @@ impl Display for Chunk {
         }
 
         writeln!(f, "\n[CONSTANTS]")?;
-        for (id, constant) in self.constants.iter().enumerate() {
-            writeln!(f, "{:03}  {}", id, constant)?;
+        for (idx, constant) in self.constants.iter().enumerate() {
+            writeln!(f, "{:03}  {}", idx, constant)?;
         }
 
         Ok(())

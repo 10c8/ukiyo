@@ -109,16 +109,68 @@
 # Red fruits: {{join (init red) ", "}} and {{last red}}.
 # "~
 
-greet ->
-  const h -> "h"
 
-  print "Hello, world!"
-  engineer
+# greet name ->
+#   const pi -> 3.14159
 
-  42
+#   a ->
+#     pi
+#     name
 
-engineer ->
-  print "Engineer is a spy!"
+#   a
 
-engineer
-greet
+# greet "Hello, world!"
+
+
+# talk name surname ->
+#   const a -> name
+
+#   b n ->
+#     a
+#     outer_pi
+
+#   b "Pizza"
+
+#   b surname
+
+# const outer_pi -> 3.14159
+
+# talk "John" "Doe"
+
+
+# Y f -> (!x -> x &x) (!y -> f (!a -> (y &y) a))
+
+# test f -> !n -> n
+
+# (Y &test) 10
+
+
+# test -> "test"
+
+# greet one ->
+#   inner two ->
+#     one
+
+#   &inner
+
+# (greet 1) 2
+
+
+# outer ->
+#   const foo -> "foo"
+#   const bar -> "bar"
+#   const pi -> 3.14159
+
+#   !zero -> pi
+
+# (outer) 0
+
+
+outer ->
+  const pi -> 3.14159
+
+  inner -> pi
+
+  &inner
+
+(outer)

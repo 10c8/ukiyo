@@ -36,13 +36,13 @@ pub enum AstNode {
         body: Box<AstNode>,
         range: Range,
     },
-    FuncRef {
-        id: Box<AstNode>,
-        range: Range,
-    },
     Lambda {
         params: EcoVec<AstNode>,
         body: Box<AstNode>,
+        range: Range,
+    },
+    FuncRef {
+        id: Box<AstNode>,
         range: Range,
     },
     Case {
@@ -132,8 +132,8 @@ impl AstNode {
             | AstNode::ExprStmt { range, .. }
             | AstNode::Block { range, .. }
             | AstNode::FuncDecl { range, .. }
-            | AstNode::FuncRef { range, .. }
             | AstNode::Lambda { range, .. }
+            | AstNode::FuncRef { range, .. }
             | AstNode::Case { range, .. }
             | AstNode::CaseBranch { range, .. }
             | AstNode::CasePattern { range, .. }
@@ -943,6 +943,21 @@ impl Parser {
         }?;
 
         let args = many!(0.., self: parse_expr)?;
+
+        match id {
+            AstNode::FuncRef { .. } => {
+                if args.is_empty() {
+                    // A function reference without arguments is not a function call:
+                    //  - `&foo`   => `func_ref`
+                    //  - `(&foo)` => `func_call`
+                    //  - `&foo a` => `func_call`
+                    //
+                    // This allows for function references to be used as a value.
+                    return Err(ParseError::Fail);
+                }
+            }
+            _ => {}
+        }
 
         let range_start = id.range();
         let range = (

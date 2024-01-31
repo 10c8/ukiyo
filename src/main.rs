@@ -19,7 +19,7 @@ use crate::{
     // interpreter::Environment,
     lexer::{Lexer, ToDiagnostic},
     parser::Parser,
-    vm::{chunk::Chunk, compiler::Compiler, Opcode, Value, VM},
+    vm::{chunk::Chunk, compiler::Compiler, VM},
 };
 
 fn main() {
@@ -115,7 +115,7 @@ fn main() {
         (mem_after - mem_before) / 1_000_000
     );
 
-    println!("\n{}", chunk);
+    println!("\n[PROGRAM]\n{}", chunk);
 
     let mem_before = if let Some(stats) = memory_stats::memory_stats() {
         stats.physical_mem + stats.virtual_mem
@@ -129,7 +129,7 @@ fn main() {
         panic!("{:?}", err);
     }
 
-    println!("\n{}", vm.stack);
+    // println!("\n{}", vm.stack);
 
     let end = Instant::now();
     let mem_after = if let Some(stats) = memory_stats::memory_stats() {
