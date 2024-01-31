@@ -2,42 +2,52 @@ pub mod chunk;
 pub mod compiler;
 
 use std::{
-    fmt::{Display, Formatter},
-    sync::{Arc, Mutex},
+    cell::RefCell,
+    fmt::{Debug, Display, Formatter},
+    rc::Rc,
 };
 
 use chunk::Chunk;
 use ecow::EcoString;
-use once_cell::sync::Lazy;
+use once_cell::unsync::Lazy;
 use rustc_hash::FxHashMap;
 
-use self::compiler::UpvalueRef;
+use compiler::Closure;
 
 #[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Opcode {
     LoadConstant,
+    #[allow(dead_code)]
     LoadConstantLong,
     StoreGlobal,
     LoadLocal,
     LoadGlobal,
     LoadUpvalue,
-    LoadNil,
     LoadTrue,
     LoadFalse,
     LoadZero,
     LoadOne,
     LoadTwo,
+    #[allow(dead_code)]
     LoadMinusOne,
     Call,
-    Closure,
-    Push,
+    GenClosure,
     Pop,
+    Jump,
+    JumpIfFalse,
+    Equals,
+    #[allow(dead_code)]
     Negate,
+    #[allow(dead_code)]
     Add,
+    #[allow(dead_code)]
     Subtract,
+    #[allow(dead_code)]
     Multiply,
+    #[allow(dead_code)]
     Divide,
+    Concatenate,
     Return,
     LAST,
 }
@@ -55,28 +65,31 @@ impl Into<u8> for Opcode {
     }
 }
 
-#[derive(Debug, Clone)]
-pub struct Closure {
-    name: EcoString,
-    arity: usize,
-    chunk: Chunk,
-    upvalues: Vec<Arc<Mutex<Upvalue>>>,
-    upvalue_refs: Vec<UpvalueRef>,
-}
-
-impl PartialEq for Closure {
-    fn eq(&self, other: &Self) -> bool {
-        self.name == other.name && self.arity == other.arity
-    }
-}
-
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, PartialEq)]
 pub enum Value {
     Nil,
     Bool(bool),
     String(EcoString),
     Number(f64),
-    Closure(Arc<Closure>),
+    Closure(Rc<RefCell<Closure>>),
+}
+
+impl Debug for Value {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Value::Nil => write!(f, "nil"),
+            Value::Bool(b) => write!(f, "{}", b),
+            Value::String(s) => write!(f, "\"{}\"", s),
+            Value::Number(n) => write!(f, "{:?}", n),
+            Value::Closure(c) => {
+                let c = c.borrow();
+                match &c.name.chars().nth(0).unwrap() {
+                    '<' => write!(f, "{}", c.name),
+                    _ => write!(f, "<fn {}>", c.name),
+                }
+            }
+        }
+    }
 }
 
 impl Display for Value {
@@ -84,24 +97,27 @@ impl Display for Value {
         match self {
             Value::Nil => write!(f, "nil"),
             Value::Bool(b) => write!(f, "{}", b),
-            Value::String(s) => write!(f, "\"{}\"", s),
+            Value::String(s) => write!(f, "{}", s),
             Value::Number(n) => write!(f, "{:?}", n),
-            Value::Closure(c) => match &c.name.chars().nth(0).unwrap() {
-                '<' => write!(f, "{}", c.name),
-                _ => write!(f, "<fn {}>", c.name),
-            },
+            Value::Closure(c) => {
+                let c = c.borrow();
+                match &c.name.chars().nth(0).unwrap() {
+                    '<' => write!(f, "{}", c.name),
+                    _ => write!(f, "<fn {}>", c.name),
+                }
+            }
         }
     }
 }
 
 pub struct CallFrame {
-    closure: Arc<Mutex<Closure>>,
+    closure: Rc<RefCell<Closure>>,
     pc: usize,
     offset: usize,
 }
 
 impl CallFrame {
-    pub fn get_closure(&self) -> &Arc<Mutex<Closure>> {
+    pub fn get_closure(&self) -> &Rc<RefCell<Closure>> {
         &self.closure
     }
 }
@@ -116,7 +132,7 @@ pub enum UpvalueKind {
 pub struct Upvalue {
     pub kind: UpvalueKind,
     pub slot: Option<usize>,
-    pub value: Arc<Value>,
+    pub value: Rc<Value>,
 }
 
 #[derive(Debug)]
@@ -126,19 +142,19 @@ pub enum VMError {
 
 type VMResult = Result<(), VMError>;
 
-static NIL_VALUE: Lazy<Arc<Value>> = Lazy::new(|| Arc::new(Value::Nil));
-static TRUE_VALUE: Lazy<Arc<Value>> = Lazy::new(|| Arc::new(Value::Bool(true)));
-static FALSE_VALUE: Lazy<Arc<Value>> = Lazy::new(|| Arc::new(Value::Bool(false)));
-static ZERO_VALUE: Lazy<Arc<Value>> = Lazy::new(|| Arc::new(Value::Number(0.0)));
-static ONE_VALUE: Lazy<Arc<Value>> = Lazy::new(|| Arc::new(Value::Number(1.0)));
-static TWO_VALUE: Lazy<Arc<Value>> = Lazy::new(|| Arc::new(Value::Number(2.0)));
-static MINUS_ONE_VALUE: Lazy<Arc<Value>> = Lazy::new(|| Arc::new(Value::Number(-1.0)));
+const NIL_VALUE: Lazy<Rc<Value>> = Lazy::new(|| Rc::new(Value::Nil));
+const TRUE_VALUE: Lazy<Rc<Value>> = Lazy::new(|| Rc::new(Value::Bool(true)));
+const FALSE_VALUE: Lazy<Rc<Value>> = Lazy::new(|| Rc::new(Value::Bool(false)));
+const ZERO_VALUE: Lazy<Rc<Value>> = Lazy::new(|| Rc::new(Value::Number(0.0)));
+const ONE_VALUE: Lazy<Rc<Value>> = Lazy::new(|| Rc::new(Value::Number(1.0)));
+const TWO_VALUE: Lazy<Rc<Value>> = Lazy::new(|| Rc::new(Value::Number(2.0)));
+const MINUS_ONE_VALUE: Lazy<Rc<Value>> = Lazy::new(|| Rc::new(Value::Number(-1.0)));
 
 pub struct VM {
     frames: Vec<CallFrame>,
-    stack: Vec<Arc<Value>>,
-    globals: FxHashMap<EcoString, Arc<Value>>,
-    open_upvalues: Vec<Arc<Mutex<Upvalue>>>,
+    stack: Vec<Rc<Value>>,
+    globals: FxHashMap<EcoString, Rc<Value>>,
+    open_upvalues: Vec<Rc<RefCell<Upvalue>>>,
 }
 
 impl VM {
@@ -153,7 +169,7 @@ impl VM {
 
     pub fn interpret(&mut self, chunk: Chunk) -> VMResult {
         let frame = CallFrame {
-            closure: Arc::new(Mutex::new(Closure {
+            closure: Rc::new(RefCell::new(Closure {
                 name: "<program>".into(),
                 arity: 0,
                 chunk,
@@ -171,9 +187,11 @@ impl VM {
     fn run(&mut self) -> VMResult {
         loop {
             if let Some(op) = self.read_byte() {
+                let op = Opcode::from(op);
+
                 {
                     let frame = self.frames.last().unwrap();
-                    let closure = frame.get_closure().lock().unwrap();
+                    let closure = frame.get_closure().borrow();
                     let chunk = &closure.chunk;
                     let pc = frame.pc;
 
@@ -185,7 +203,7 @@ impl VM {
                                 if let Some(value) = chunk.get_constant(*idx as usize) {
                                     data = format!(".. .. {:02x} {:02x}", op as u8, idx).into();
 
-                                    format!("LOAD_CONST {:08} = {}", idx, value)
+                                    format!("LOAD_CONST {:06x} = {:?}", idx, value)
                                 } else {
                                     panic!("unknown constant");
                                 }
@@ -215,7 +233,7 @@ impl VM {
                             };
 
                             if let Some(value) = chunk.get_constant(idx) {
-                                format!("LOAD_CONST {:08} = {}", idx, value)
+                                format!("LOAD_CONST {:06x} = {:?}", idx, value)
                             } else {
                                 panic!("unknown constant: {}", idx);
                             }
@@ -226,7 +244,7 @@ impl VM {
                                 data = format!(".. .. {:02x} {:02x}", op as u8, idx).into();
 
                                 let value = self.stack.get(frame.offset + *idx as usize).unwrap();
-                                format!("LD_LOCAL {} = {}", idx, value)
+                                format!("LD_LOCAL {:02x} = {:?}", idx, value)
                             } else {
                                 panic!("missing local id");
                             }
@@ -236,17 +254,16 @@ impl VM {
                             if let Some(idx) = chunk.read(pc) {
                                 data = format!(".. .. {:02x} {:02x}", op as u8, idx).into();
 
-                                let upvalue =
-                                    closure.upvalues.get(*idx as usize).unwrap().lock().unwrap();
+                                let upvalue = closure.upvalues.get(*idx as usize).unwrap().borrow();
                                 match upvalue.kind {
                                     UpvalueKind::Open => {
                                         let slot = upvalue.slot.unwrap();
                                         let value = self.stack.get(slot).unwrap();
-                                        format!("LD_UPVAL {} = {}", idx, value)
+                                        format!("LD_UPVAL {:02x} (OPEN) = {:?}", idx, value)
                                     }
                                     UpvalueKind::Closed => {
                                         let value = upvalue.value.clone();
-                                        format!("LD_UPVAL {} = {}", idx, value)
+                                        format!("LD_UPVAL {:02x} (CLOSED) = {:?}", idx, value)
                                     }
                                 }
                             } else {
@@ -257,36 +274,37 @@ impl VM {
                         Opcode::LoadOne => "LOAD_ONE".to_string(),
                         Opcode::LoadTwo => "LOAD_TWO".to_string(),
                         Opcode::LoadMinusOne => "LOAD_MINUS_ONE".to_string(),
-                        Opcode::LoadNil => "LOAD_NIL".to_string(),
                         Opcode::LoadTrue => "LOAD_TRUE".to_string(),
                         Opcode::LoadFalse => "LOAD_FALSE".to_string(),
                         Opcode::Call => {
                             if let Some(argc) = chunk.read(pc) {
                                 data = format!(".. .. {:02x} {:02x}", op as u8, argc).into();
 
-                                format!("CALL {}", argc)
+                                format!("CALL {:02x}", argc)
                             } else {
                                 panic!("missing argument count");
                             }
                         }
-                        Opcode::Closure => {
+                        Opcode::GenClosure => {
                             let idx = if let Some(idx) = chunk.read(pc) {
                                 *idx as usize
                             } else {
-                                panic!("missing constant id");
+                                panic!("missing function id");
                             };
 
                             let value = if let Some(value) = chunk.get_constant(idx) {
                                 value.clone()
                             } else {
-                                panic!("unknown constant");
+                                panic!("unknown function");
                             };
 
                             if let Value::Closure(closure) = value.as_ref() {
+                                let closure = closure.borrow();
+
                                 data = format!(".. .. .. {:02x}", op as u8).into();
 
                                 let mut line = String::from(format!(
-                                    "CLOSURE {} * {:03x}",
+                                    "GEN_CLOSURE {} * {:03x}",
                                     value,
                                     closure.upvalue_refs.len()
                                 ));
@@ -301,23 +319,72 @@ impl VM {
 
                                 line
                             } else {
-                                panic!("invalid closure");
+                                panic!("invalid function");
                             }
                         }
-                        Opcode::Push => "PUSH".to_string(),
                         Opcode::Pop => "POP".to_string(),
+                        Opcode::Jump => {
+                            let offset_lo = chunk.read(pc);
+                            let offset_md = chunk.read(pc + 1);
+                            let offset_hi = chunk.read(pc + 2);
+
+                            let offset =
+                                if let (Some(offset_lo), Some(offset_mi), Some(offset_hi)) =
+                                    (offset_lo, offset_md, offset_hi)
+                                {
+                                    data = format!(
+                                        "{:02x} {:02x} {:02x} {:02x}",
+                                        op as u8, offset_lo, offset_mi, offset_hi
+                                    )
+                                    .into();
+
+                                    (*offset_lo as usize)
+                                        | ((*offset_mi as usize) << 8)
+                                        | ((*offset_hi as usize) << 16)
+                                } else {
+                                    panic!("missing jump offset");
+                                };
+
+                            format!("JMP {:06x}", offset)
+                        }
+                        Opcode::JumpIfFalse => {
+                            let offset_lo = chunk.read(pc);
+                            let offset_md = chunk.read(pc + 1);
+                            let offset_hi = chunk.read(pc + 2);
+
+                            let offset =
+                                if let (Some(offset_lo), Some(offset_mi), Some(offset_hi)) =
+                                    (offset_lo, offset_md, offset_hi)
+                                {
+                                    data = format!(
+                                        "{:02x} {:02x} {:02x} {:02x}",
+                                        op as u8, offset_lo, offset_mi, offset_hi
+                                    )
+                                    .into();
+
+                                    (*offset_lo as usize)
+                                        | ((*offset_mi as usize) << 8)
+                                        | ((*offset_hi as usize) << 16)
+                                } else {
+                                    panic!("missing jump offset");
+                                };
+
+                            format!("JF {:06x}", offset)
+                        }
+                        Opcode::Equals => "EQ".to_string(),
                         Opcode::Negate => "NEG".to_string(),
                         Opcode::Add => "ADD".to_string(),
                         Opcode::Multiply => "MUL".to_string(),
                         Opcode::Divide => "DIV".to_string(),
                         Opcode::Subtract => "SUB".to_string(),
+                        Opcode::Concatenate => "CONCAT".to_string(),
                         Opcode::Return => "RET".to_string(),
                         _ => todo!(),
                     };
 
                     let line = chunk.get_line(pc).unwrap();
 
-                    println!("{:#04}  {:04} {}  {}", pc, line, data, instruction);
+                    println!("{:#04}  {:04} {}  {}", pc - 1, line, data, instruction);
                 }
 
                 match op {
@@ -327,7 +394,6 @@ impl VM {
                     Opcode::LoadLocal => self.op_ld_local()?,
                     Opcode::LoadGlobal => self.op_ld_global()?,
                     Opcode::LoadUpvalue => self.op_ld_upval()?,
-                    Opcode::LoadNil => self.stack.push(NIL_VALUE.clone()),
                     Opcode::LoadTrue => self.stack.push(TRUE_VALUE.clone()),
                     Opcode::LoadFalse => self.stack.push(FALSE_VALUE.clone()),
                     Opcode::LoadZero => self.stack.push(ZERO_VALUE.clone()),
@@ -335,14 +401,17 @@ impl VM {
                     Opcode::LoadTwo => self.stack.push(TWO_VALUE.clone()),
                     Opcode::LoadMinusOne => self.stack.push(MINUS_ONE_VALUE.clone()),
                     Opcode::Call => self.op_call()?,
-                    Opcode::Closure => self.op_closure()?,
-                    Opcode::Push => self.op_push()?,
+                    Opcode::GenClosure => self.op_gen_closure()?,
                     Opcode::Pop => self.op_pop()?,
+                    Opcode::Jump => self.op_jmp()?,
+                    Opcode::JumpIfFalse => self.op_jf()?,
+                    Opcode::Equals => self.op_eq()?,
                     Opcode::Negate => self.op_neg()?,
                     Opcode::Add => self.op_add()?,
                     Opcode::Subtract => self.op_sub()?,
                     Opcode::Multiply => self.op_mul()?,
                     Opcode::Divide => self.op_div()?,
+                    Opcode::Concatenate => self.op_concat()?,
                     Opcode::Return => {
                         let result = self.stack.pop().unwrap_or(NIL_VALUE.clone());
 
@@ -351,7 +420,18 @@ impl VM {
                         let frame = self.frames.pop().unwrap();
 
                         if self.frames.is_empty() {
-                            println!("\n>>> RESULT = {}", result);
+                            println!("\n>>> RESULT = {:?}", result);
+
+                            println!(">>> GLOBALS");
+                            for (name, value) in &self.globals {
+                                println!("{} = {:?}", name, value);
+                            }
+
+                            println!(">>> STACK");
+                            for value in &self.stack {
+                                println!("{:?}", value);
+                            }
+
                             return Ok(());
                         }
 
@@ -368,11 +448,11 @@ impl VM {
         Ok(())
     }
 
-    fn read_byte(&mut self) -> Option<Opcode> {
+    fn read_byte(&mut self) -> Option<u8> {
         let frame = self.frames.last_mut().unwrap();
 
         let op = {
-            let chunk = &frame.get_closure().lock().unwrap().chunk;
+            let chunk = &frame.get_closure().borrow().chunk;
 
             if let Some(op) = chunk.read(frame.pc) {
                 Some((*op).into())
@@ -388,9 +468,11 @@ impl VM {
         op
     }
 
-    fn call_value(&mut self, callee: &Arc<Value>, argc: usize) {
+    fn call_value(&mut self, callee: &Rc<Value>, argc: usize) {
         match callee.as_ref() {
-            Value::Closure(closure) => {
+            Value::Closure(value) => {
+                let closure = value.borrow();
+
                 if argc != closure.arity {
                     panic!(
                         "call_value: expected {} arguments, got {}",
@@ -398,8 +480,10 @@ impl VM {
                     );
                 }
 
+                // println!("{}", closure.chunk);
+
                 let frame = CallFrame {
-                    closure: Arc::new(Mutex::new(closure.as_ref().clone())),
+                    closure: value.clone(),
                     pc: 0,
                     offset: (self.stack.len() as isize - argc as isize) as usize,
                 };
@@ -423,12 +507,7 @@ impl VM {
                 break;
             }
 
-            let mut u = self
-                .open_upvalues
-                .get(i as usize - 1)
-                .unwrap()
-                .lock()
-                .unwrap();
+            let mut u = self.open_upvalues.get(i as usize - 1).unwrap().borrow_mut();
 
             let slot = u.slot.unwrap();
             if slot < last {
@@ -468,7 +547,7 @@ impl VM {
         };
 
         let frame = self.frames.last_mut().unwrap();
-        let chunk = &frame.get_closure().lock().unwrap().chunk;
+        let chunk = &frame.get_closure().borrow().chunk;
 
         if let Some(constant) = chunk.get_constant(id as usize) {
             self.stack.push(constant.clone());
@@ -555,10 +634,10 @@ impl VM {
     fn op_ld_upval(&mut self) -> VMResult {
         if let Some(idx) = self.read_byte() {
             let frame = self.frames.last().unwrap();
-            let closure = frame.get_closure().lock().unwrap();
+            let closure = frame.get_closure().borrow();
 
             if let Some(upvalue) = closure.upvalues.get(idx as usize) {
-                let upvalue = upvalue.lock().unwrap();
+                let upvalue = upvalue.borrow();
                 let value = match upvalue.kind {
                     UpvalueKind::Open => {
                         let slot = upvalue.slot.unwrap();
@@ -602,56 +681,56 @@ impl VM {
         return Ok(());
     }
 
-    // CLOSURE
-    fn op_closure(&mut self) -> VMResult {
+    // GEN_CLOSURE
+    fn op_gen_closure(&mut self) -> VMResult {
         let closure_id = if let Some(closure_id) = self.read_byte() {
             closure_id as usize
         } else {
-            println!("closure: missing constant id");
+            println!("gen_closure: missing constant id");
             return Err(VMError::RuntimeError);
         };
 
         let value = {
             let frame = self.frames.last().unwrap();
-            let chunk = &frame.get_closure().lock().unwrap().chunk;
+            let chunk = &frame.get_closure().borrow().chunk;
 
             if let Some(value) = chunk.get_constant(closure_id) {
                 value.clone()
             } else {
-                println!("closure: unknown constant");
+                println!("gen_closure: unknown constant");
                 return Err(VMError::RuntimeError);
             }
         };
 
-        // println!(">>> CLOSURE {}", value);
+        // println!(">>> GEN_CLOSURE {}", value);
 
         if let Value::Closure(closure) = value.as_ref() {
-            let mut closure = (**closure).clone();
+            let closure = &mut closure.borrow_mut();
 
             for _ in 0..closure.upvalue_refs.len() {
                 let idx = if let Some(idx) = self.read_byte() {
                     idx
                 } else {
-                    println!("closure: missing upval index");
+                    println!("gen_closure: missing upval index");
                     return Err(VMError::RuntimeError);
                 };
 
                 let is_local = if let Some(is_local) = self.read_byte() {
                     is_local as u8 == 1
                 } else {
-                    println!("closure: missing upval type");
+                    println!("gen_closure: missing upval type");
                     return Err(VMError::RuntimeError);
                 };
 
                 let frame = self.frames.last().unwrap();
-                let frame_closure = frame.get_closure().lock().unwrap();
+                let frame_closure = frame.get_closure().borrow();
 
                 if is_local {
                     if self
                         .open_upvalues
                         .iter()
                         .rfind(|u| {
-                            let u = u.lock().unwrap();
+                            let u = u.borrow();
                             u.kind == UpvalueKind::Open
                                 && u.slot.unwrap() == frame.offset + idx as usize
                         })
@@ -661,7 +740,7 @@ impl VM {
                         {
                             value
                         } else {
-                            println!("closure: undefined variable");
+                            println!("gen_closure: undefined variable");
                             println!("idx: {} (offset: {})", idx as usize, frame.offset);
 
                             return Err(VMError::RuntimeError);
@@ -672,7 +751,7 @@ impl VM {
                             slot: Some(frame.offset + idx as usize),
                             value: value.clone(),
                         };
-                        let upvalue = Arc::new(Mutex::new(upvalue));
+                        let upvalue = Rc::new(RefCell::new(upvalue));
 
                         // println!(
                         //     "    capture LOCAL {:03} (offset: {}) = {}",
@@ -680,7 +759,7 @@ impl VM {
                         // );
 
                         closure.upvalues.push(upvalue.clone());
-                        self.open_upvalues.push(upvalue.clone());
+                        self.open_upvalues.push(upvalue);
                     }
                 } else {
                     // println!(
@@ -701,18 +780,13 @@ impl VM {
             }
 
             self.stack.pop();
-            self.stack.push(Value::Closure(closure.into()).into());
+            self.stack.push(value.clone());
 
             return Ok(());
+        } else {
+            println!("gen_closure: invalid closure");
+            Err(VMError::RuntimeError)
         }
-
-        println!("closure: invalid closure");
-        Err(VMError::RuntimeError)
-    }
-
-    // PUSH
-    fn op_push(&mut self) -> VMResult {
-        todo!()
     }
 
     // POP
@@ -722,6 +796,73 @@ impl VM {
         }
 
         println!("pop: stack underflow");
+        Err(VMError::RuntimeError)
+    }
+
+    // JMP <offset: u24>
+    fn op_jmp(&mut self) -> VMResult {
+        let offset_lo = self.read_byte();
+        let offset_md = self.read_byte();
+        let offset_hi = self.read_byte();
+
+        let offset = if let (Some(offset_lo), Some(offset_md), Some(offset_hi)) =
+            (offset_lo, offset_md, offset_hi)
+        {
+            (offset_lo as usize) | ((offset_md as usize) << 8) | ((offset_hi as usize) << 16)
+        } else {
+            println!("jmp: missing offset");
+            return Err(VMError::RuntimeError);
+        };
+
+        let frame = self.frames.last_mut().unwrap();
+        // println!("jmp: jump to {}", frame.pc + offset);
+        frame.pc += offset;
+
+        Ok(())
+    }
+
+    // JF <offset: u24>
+    fn op_jf(&mut self) -> VMResult {
+        let offset_lo = self.read_byte();
+        let offset_md = self.read_byte();
+        let offset_hi = self.read_byte();
+
+        let offset = if let (Some(offset_lo), Some(offset_md), Some(offset_hi)) =
+            (offset_lo, offset_md, offset_hi)
+        {
+            (offset_lo as usize) | ((offset_md as usize) << 8) | ((offset_hi as usize) << 16)
+        } else {
+            println!("jf: missing offset");
+            return Err(VMError::RuntimeError);
+        };
+
+        if let Some(condition) = self.stack.get(self.stack.len() - 1) {
+            if let Value::Bool(condition) = condition.as_ref() {
+                if !condition {
+                    let frame = self.frames.last_mut().unwrap();
+                    // println!("jf: jump to {}", offset);
+                    frame.pc += offset;
+                }
+
+                return Ok(());
+            }
+        }
+
+        println!("jf: invalid condition");
+        Err(VMError::RuntimeError)
+    }
+
+    // EQ
+    fn op_eq(&mut self) -> VMResult {
+        let b = self.stack.pop();
+        let a = self.stack.pop();
+
+        if let (Some(a), Some(b)) = (a, b) {
+            self.stack.push(Value::Bool(a == b).into());
+            return Ok(());
+        }
+
+        println!("eq: invalid operands");
         Err(VMError::RuntimeError)
     }
 
@@ -799,6 +940,27 @@ impl VM {
         }
 
         println!("div: invalid operands");
+        Err(VMError::RuntimeError)
+    }
+
+    // CONCAT
+    fn op_concat(&mut self) -> VMResult {
+        let b = self.stack.pop();
+        let a = self.stack.pop();
+
+        if let (Some(a), Some(b)) = (a, b) {
+            let a = a.to_string();
+            let b = b.to_string();
+
+            let mut result = a.clone();
+            result.push_str(&b);
+
+            self.stack.push(Value::String(result.into()).into());
+
+            return Ok(());
+        }
+
+        println!("concat: invalid operands");
         Err(VMError::RuntimeError)
     }
 }

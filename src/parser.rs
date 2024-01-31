@@ -9,7 +9,7 @@ type Range = (usize, usize);
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum CasePatternKind {
-    Any,
+    Wildcard,
     Ident,
     Literal,
     // Or,
@@ -91,7 +91,10 @@ pub enum AstNode {
     },
     StrLit {
         value: EcoString,
-        is_format: bool,
+        range: Range,
+    },
+    FmtString {
+        value: EcoString,
         range: Range,
     },
     Regex {
@@ -144,6 +147,7 @@ impl AstNode {
             | AstNode::Ident { range, .. }
             | AstNode::BoolLit { range, .. }
             | AstNode::StrLit { range, .. }
+            | AstNode::FmtString { range, .. }
             | AstNode::Regex { range, .. }
             | AstNode::NumLit { range, .. }
             | AstNode::List { range, .. }
@@ -601,6 +605,12 @@ impl Parser {
         }?;
         let range = expr.range();
 
+        // Evaluate possible format string
+        let expr = match expr {
+            AstNode::FmtString { .. } => self.eval_fmt_string(expr)?,
+            _ => expr,
+        };
+
         Ok(AstNode::ExprStmt {
             expr: Box::new(expr),
             range,
@@ -639,7 +649,7 @@ impl Parser {
     }
 
     fn parse_block_stmt(&mut self) -> PResult {
-        any! {
+        let result = any! {
             self: parse_func_decl, "function declaration"
                 | parse_case, "case statement"
                 | parse_indexing, "indexing"
@@ -647,6 +657,12 @@ impl Parser {
                 | parse_iteration_op, "iterator"
                 | parse_func_call, "function call"
                 | parse_expr, "expression"
+        }?;
+
+        // Evaluate possible format string
+        match result {
+            AstNode::FmtString { .. } => self.eval_fmt_string(result),
+            _ => Ok(result),
         }
     }
 
@@ -708,7 +724,7 @@ impl Parser {
 
         token!("`->`"; self: Token::AssignmentArrow { .. })?;
 
-        let body = cut!(self: parse_func_block)?;
+        let body = cut!(self: parse_func_body)?;
 
         let range = (range_start, body.range().1);
 
@@ -728,7 +744,7 @@ impl Parser {
 
         token!("`->`"; self: Token::AssignmentArrow { .. })?;
 
-        let body = cut!(self: parse_func_block)?;
+        let body = cut!(self: parse_func_body)?;
 
         let range = (anon_marker.span().range.0, body.range().1);
 
@@ -739,8 +755,8 @@ impl Parser {
         })
     }
 
-    fn parse_func_block(&mut self) -> PResult {
-        any! {
+    fn parse_func_body(&mut self) -> PResult {
+        let body = any! {
             self: parse_block, "indented block"
                 | parse_case, "case statement"
                 | parse_lambda, "lambda"
@@ -750,6 +766,23 @@ impl Parser {
                 | parse_iteration_op, "iterator"
                 | parse_func_call, "function call"
                 | parse_expr, "expression"
+        }?;
+
+        // Evaluate possible format string
+        let body = match body {
+            AstNode::FmtString { .. } => self.eval_fmt_string(body)?,
+            _ => body,
+        };
+
+        match body {
+            AstNode::Block { .. } => Ok(body),
+            _ => {
+                let range = (body.range().0, body.range().1);
+                Ok(AstNode::Block {
+                    body: vec![body].into(),
+                    range,
+                })
+            }
         }
     }
 
@@ -768,6 +801,12 @@ impl Parser {
         cut!(self: parse_dedent)?;
 
         let range = (case.span().range.0, cases.last().unwrap().range().1);
+
+        // Evaluate possible format string
+        let expr = match expr {
+            AstNode::FmtString { .. } => self.eval_fmt_string(expr)?,
+            _ => expr,
+        };
 
         Ok(AstNode::Case {
             expr: Box::new(expr),
@@ -812,6 +851,12 @@ impl Parser {
 
         let range = (pattern.range().0, body.range().1);
 
+        // Evaluate possible format string
+        let body = match body {
+            AstNode::FmtString { .. } => self.eval_fmt_string(body)?,
+            _ => body,
+        };
+
         Ok(AstNode::CaseBranch {
             pattern: Box::new(pattern),
             body: Box::new(body),
@@ -834,7 +879,7 @@ impl Parser {
                 ref name, range, ..
             } => {
                 let kind = if name == UNDERLINE {
-                    CasePatternKind::Any
+                    CasePatternKind::Wildcard
                 } else {
                     CasePatternKind::Ident
                 };
@@ -925,6 +970,7 @@ impl Parser {
                 | parse_identifier, "identifier"
                 | parse_bool, "boolean"
                 | parse_string, "string"
+                | parse_fmt_string, "format string"
                 | parse_number, "number"
                 | parse_list, "list"
                 | parse_record, "record"
@@ -977,6 +1023,12 @@ impl Parser {
     fn parse_func_arg(&mut self) -> PResult {
         let arg = self.parse_expr()?;
 
+        // Evaluate possible format string
+        let arg = match arg {
+            AstNode::FmtString { .. } => self.eval_fmt_string(arg)?,
+            _ => arg,
+        };
+
         let result = match arg {
             AstNode::Ident { .. } => AstNode::FuncCall {
                 callee: Box::new(arg.clone()),
@@ -1021,6 +1073,7 @@ impl Parser {
                 | parse_identifier, "identifier"
                 | parse_bool, "boolean"
                 | parse_string, "string"
+                | parse_fmt_string, "format string"
                 | parse_number, "number"
                 | parse_list, "list"
                 | parse_record, "record"
@@ -1032,6 +1085,17 @@ impl Parser {
         token!("`@`"; self: Token::Symbol { value: '@', .. })?;
 
         let index = cut!(self: parse_expr)?;
+
+        // Evaluate possible format strings
+        let expr = match expr {
+            AstNode::FmtString { .. } => self.eval_fmt_string(expr)?,
+            _ => expr,
+        };
+
+        let index = match index {
+            AstNode::FmtString { .. } => self.eval_fmt_string(index)?,
+            _ => index,
+        };
 
         let range = (expr.range().0, index.range().1);
 
@@ -1049,6 +1113,7 @@ impl Parser {
                 | parse_identifier, "identifier"
                 | parse_bool, "boolean"
                 | parse_string, "string"
+                | parse_fmt_string, "format string"
                 | parse_number, "number"
                 | parse_list, "list"
                 | parse_record, "record"
@@ -1060,6 +1125,17 @@ impl Parser {
         token!("`++`"; self: Token::ConcatOperator { .. })?;
 
         let right = cut!(self: parse_expr)?;
+
+        // Evaluate possible format strings
+        let left = match left {
+            AstNode::FmtString { .. } => self.eval_fmt_string(left)?,
+            _ => left,
+        };
+
+        let right = match right {
+            AstNode::FmtString { .. } => self.eval_fmt_string(right)?,
+            _ => right,
+        };
 
         let range = (left.range().0, right.range().1);
 
@@ -1087,6 +1163,17 @@ impl Parser {
                 | parse_expr_stmt, "expression"
         };
         let right = self.cut(right)?;
+
+        // Evaluate possible format strings
+        let left = match left {
+            AstNode::FmtString { .. } => self.eval_fmt_string(left)?,
+            _ => left,
+        };
+
+        let right = match right {
+            AstNode::FmtString { .. } => self.eval_fmt_string(right)?,
+            _ => right,
+        };
 
         let range = (left.range().0, right.range().1);
 
@@ -1129,15 +1216,142 @@ impl Parser {
     }
 
     fn parse_string(&mut self) -> PResult {
-        let format_marker = opt!(self: Token::Symbol { value: '$', .. });
-
         let (value, span) = self.parse_string_part()?;
 
         Ok(AstNode::StrLit {
             value,
-            is_format: format_marker.is_some(),
             range: span.range,
         })
+    }
+
+    fn parse_fmt_string(&mut self) -> PResult {
+        token!("`$`"; self: Token::Symbol { value: '$', .. })?;
+
+        let (value, span) = cut!(self: parse_string_part)?;
+
+        Ok(AstNode::FmtString {
+            value,
+            range: span.range,
+        })
+    }
+
+    fn eval_fmt_string(&mut self, fmt_string: AstNode) -> PResult {
+        // Format string evaluation is a two-step process for performance reasons:
+        // The parser might encounter a format string in the middle of trying to parse a
+        // larger expression, and it might fail. It would be a waste to evaluate the format
+        // string only to throw it away.
+
+        if let AstNode::FmtString { value, range } = fmt_string {
+            let mut parts: Vec<(AstNode, Range)> = Vec::new();
+
+            let mut part_start = 0;
+            let mut part = EcoString::new();
+
+            let mut capture = EcoString::new();
+            let mut capture_start = 0;
+            let mut is_capturing = false;
+
+            let mut chars = value.chars().enumerate().peekable();
+
+            while let Some((i, c)) = chars.next() {
+                if is_capturing {
+                    match c {
+                        '}' => {
+                            if let Some((_, '}')) = chars.peek() {
+                                chars.next();
+
+                                is_capturing = false;
+
+                                part_start = i + 2;
+
+                                let mut lexer = Lexer::new(&capture.clone());
+                                if let Err(_err) = lexer.lex() {
+                                    return Err(ParseError::Fail);
+                                }
+
+                                let mut parser = Parser::new(lexer);
+                                let ast = parser.parse();
+                                if let Err(err) = ast {
+                                    return Err(err);
+                                }
+
+                                if let AstNode::Prog { body, .. } = ast.unwrap() {
+                                    if body.is_empty() {
+                                        return Err(ParseError::Fail);
+                                    }
+
+                                    let range = (range.0 + capture_start, range.0 + i - 1);
+                                    let node = body.first().unwrap().clone();
+                                    parts.push((node, range));
+                                }
+
+                                capture.clear();
+                            } else {
+                                capture.push(c);
+                            }
+                        }
+                        _ => {
+                            capture.push(c);
+                        }
+                    }
+                } else {
+                    match c {
+                        '{' => {
+                            if let Some((i, '{')) = chars.peek() {
+                                let range = (range.0 + part_start, range.0 + i - 2);
+                                let node = AstNode::StrLit {
+                                    value: part.clone(),
+                                    range,
+                                };
+                                parts.push((node, range));
+
+                                part.clear();
+
+                                is_capturing = true;
+                                capture_start = i + 2;
+
+                                chars.next();
+                            } else {
+                                part.push(c);
+                            }
+                        }
+                        _ => {
+                            part.push(c);
+                        }
+                    }
+                }
+            }
+
+            if !part.is_empty() {
+                let range = (part_start, range.1);
+                let node = AstNode::StrLit { value: part, range };
+                parts.push((node, range));
+            }
+
+            let left = parts.remove(0).0;
+            let right = if parts.is_empty() {
+                return Err(ParseError::Fail);
+            } else {
+                parts.remove(0).0
+            };
+
+            let mut result = AstNode::ConcatOp {
+                left: Box::new(left),
+                right: Box::new(right),
+                range,
+            };
+            for (part, range) in parts {
+                result = AstNode::ConcatOp {
+                    left: Box::new(result),
+                    right: Box::new(part),
+                    range,
+                };
+            }
+
+            return Ok(result);
+        }
+
+        unreachable!()
     }
 
     fn parse_string_part(&mut self) -> Result<(EcoString, Span), ParseError> {
@@ -1234,6 +1448,13 @@ impl Parser {
             }
         }
 
+        // Evaluate possible format strings
+        for item in &mut items {
+            if let AstNode::FmtString { .. } = item {
+                *item = self.eval_fmt_string(item.clone())?;
+            }
+        }
+
         Ok(items)
     }
 
@@ -1293,6 +1514,13 @@ impl Parser {
                     expected: &["`,`", "`}`"],
                 });
             }
+
+            // Evaluate possible format strings
+            for value in &mut values {
+                if let AstNode::FmtString { .. } = value {
+                    *value = self.eval_fmt_string(value.clone())?;
+                }
+            }
         }
 
         Ok((keys, values))
@@ -1320,6 +1548,17 @@ impl Parser {
 
         let end = cut!(self: parse_range_part)?;
 
+        // Evaluate possible format strings
+        let start = match start {
+            AstNode::FmtString { .. } => self.eval_fmt_string(start)?,
+            _ => start,
+        };
+
+        let end = match end {
+            AstNode::FmtString { .. } => self.eval_fmt_string(end)?,
+            _ => end,
+        };
+
         let range = (start.range().0, end.range().1);
 
         Ok(AstNode::Range {
@@ -1334,6 +1573,7 @@ impl Parser {
         any! {
             self: parse_identifier, "identifier"
                 | parse_string, "string"
+                | parse_fmt_string, "format string"
                 | parse_number, "number"
                 | parse_par_expr, "expression"
         }
@@ -1357,6 +1597,12 @@ impl Parser {
 
         let end = token!("`)`"; self: Token::Symbol { value: ')', .. });
         self.cut(end)?;
+
+        // Evaluate possible format string
+        let expr = match expr {
+            AstNode::FmtString { .. } => self.eval_fmt_string(expr)?,
+            _ => expr,
+        };
 
         Ok(expr)
     }

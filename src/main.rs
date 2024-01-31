@@ -1,6 +1,5 @@
-// mod interpreter;
 mod lexer;
-mod llm;
+// mod llm;
 mod parser;
 mod scanner;
 mod vm;
@@ -16,7 +15,6 @@ use codespan_reporting::{
 };
 
 use crate::{
-    // interpreter::Environment,
     lexer::{Lexer, ToDiagnostic},
     parser::Parser,
     vm::{chunk::Chunk, compiler::Compiler, VM},

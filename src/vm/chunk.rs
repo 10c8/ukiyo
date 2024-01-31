@@ -1,6 +1,6 @@
 use std::{
     fmt::{Display, Formatter},
-    sync::Arc,
+    rc::Rc,
 };
 
 use ecow::EcoString;
@@ -15,9 +15,9 @@ struct LineInfo {
 
 #[derive(Debug, Clone)]
 pub struct Chunk {
-    code: Vec<u8>,
+    pub code: Vec<u8>,
     lines: Vec<LineInfo>,
-    constants: Vec<Arc<Value>>,
+    constants: Vec<Rc<Value>>,
 }
 
 impl Chunk {
@@ -60,7 +60,7 @@ impl Chunk {
         None
     }
 
-    pub fn add_constant(&mut self, value: Arc<Value>) -> usize {
+    pub fn add_constant(&mut self, value: Rc<Value>) -> usize {
         if let Some(idx) = self.find_constant(&value) {
             return idx;
         }
@@ -69,11 +69,11 @@ impl Chunk {
         self.constants.len() - 1
     }
 
-    pub fn get_constant(&self, idx: usize) -> Option<&Arc<Value>> {
+    pub fn get_constant(&self, idx: usize) -> Option<&Rc<Value>> {
         self.constants.get(idx)
     }
 
-    fn find_constant(&self, value: &Arc<Value>) -> Option<usize> {
+    fn find_constant(&self, value: &Rc<Value>) -> Option<usize> {
         self.constants.iter().position(|v| v == value)
     }
 }
@@ -149,7 +149,6 @@ impl Display for Chunk {
                 Opcode::LoadOne => "LOAD_ONE".to_string(),
                 Opcode::LoadTwo => "LOAD_TWO".to_string(),
                 Opcode::LoadMinusOne => "LOAD_MINUS_ONE".to_string(),
-                Opcode::LoadNil => "LOAD_NIL".to_string(),
                 Opcode::LoadTrue => "LOAD_TRUE".to_string(),
                 Opcode::LoadFalse => "LOAD_FALSE".to_string(),
                 Opcode::Call => {
@@ -161,7 +160,7 @@ impl Display for Chunk {
                         panic!("missing argument count");
                     }
                 }
-                Opcode::Closure => {
+                Opcode::GenClosure => {
                     let idx = if let Some((idx, _)) = code.next() {
                         idx as usize
                     } else {
@@ -169,16 +168,18 @@ impl Display for Chunk {
                     };
 
                     let value = if let Some(value) = self.get_constant(idx) {
-                        value.clone()
+                        value
                     } else {
                         panic!("unknown closure");
                     };
 
                     if let Value::Closure(closure) = value.as_ref() {
+                        let closure = closure.borrow();
+
                         data = format!(".. .. .. {:02x}", op).into();
 
                         let mut line = String::from(format!(
-                            "CLOSURE {} * {:03x}",
+                            "GEN_CLOSURE {} * {:03x}",
                             value,
                             closure.upvalues.len()
                         ));
@@ -196,15 +197,64 @@ impl Display for Chunk {
                         panic!("invalid closure");
                     }
                 }
-                Opcode::Push => "PUSH".to_string(),
                 Opcode::Pop => "POP".to_string(),
+                Opcode::Jump => {
+                    let offset_lo = code.next();
+                    let offset_md = code.next();
+                    let offset_hi = code.next();
+
+                    let offset =
+                        if let (Some((_, offset_lo)), Some((_, offset_mi)), Some((_, offset_hi))) =
+                            (offset_lo, offset_md, offset_hi)
+                        {
+                            data = format!(
+                                "{:02x} {:02x} {:02x} {:02x}",
+                                op, offset_lo, offset_mi, offset_hi
+                            )
+                            .into();
+
+                            (*offset_lo as usize)
+                                | ((*offset_mi as usize) << 8)
+                                | ((*offset_hi as usize) << 16)
+                        } else {
+                            panic!("missing jump offset");
+                        };
+
+                    format!("JMP {:06x}", offset)
+                }
+                Opcode::JumpIfFalse => {
+                    let offset_lo = code.next();
+                    let offset_md = code.next();
+                    let offset_hi = code.next();
+
+                    let offset =
+                        if let (Some((_, offset_lo)), Some((_, offset_mi)), Some((_, offset_hi))) =
+                            (offset_lo, offset_md, offset_hi)
+                        {
+                            data = format!(
+                                "{:02x} {:02x} {:02x} {:02x}",
+                                op, offset_lo, offset_mi, offset_hi
+                            )
+                            .into();
+
+                            (*offset_lo as usize)
+                                | ((*offset_mi as usize) << 8)
+                                | ((*offset_hi as usize) << 16)
+                        } else {
+                            panic!("missing jump offset");
+                        };
+
+                    format!("JF {:06x}", offset)
+                }
+                Opcode::Equals => "EQ".to_string(),
                 Opcode::Negate => "NEG".to_string(),
                 Opcode::Add => "ADD".to_string(),
                 Opcode::Multiply => "MUL".to_string(),
                 Opcode::Divide => "DIV".to_string(),
                 Opcode::Subtract => "SUB".to_string(),
+                Opcode::Concatenate => "CONCAT".to_string(),
                 Opcode::Return => "RET".to_string(),
-                _ => todo!(),
+                _ => todo!("opcode: {:?}", Opcode::from(*op)),
             };
 
             let line = self.get_line(i).unwrap();

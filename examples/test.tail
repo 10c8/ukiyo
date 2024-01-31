@@ -138,11 +138,24 @@
 # talk "John" "Doe"
 
 
-Y f -> (!x -> x &x) (!y -> f (!a -> (y &y) a))
+# Y f -> (!x -> x &x) (!y -> f (!a -> (y &y) a))
 
-test f -> !n -> n
+# test f -> !n -> n
 
-(Y &test) 10
+# const a -> (Y &test) 10
+# const b -> (Y &test) 10
+
+# (Y &test) 10
+
+# (Y &test) 10
+
+
+greet name -> case name of
+  "John"   => "Howdy, Johnny!"
+  "Jane"   => "Hi, Jane!"
+  stranger => $"Hey there, {{stranger}}!"
+
+greet "Paul"
 
 
 # greet one ->
@@ -183,3 +196,12 @@ test f -> !n -> n
 #   middle
 
 # (outer)
+
+
+# Y f -> (!x -> x &x) (!y -> f (!a -> (y &y) a))
+
+# fac f -> !n -> case (lt n 2) of
+#   true  => 1
+#   false => mul n (f (sub n 1))
+
+# (Y &fac) 10
