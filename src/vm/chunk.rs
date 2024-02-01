@@ -247,6 +247,11 @@ impl Display for Chunk {
                     format!("JF {:06x}", offset)
                 }
                 Opcode::Equals => "EQ".to_string(),
+                Opcode::NotEquals => "NEQ".to_string(),
+                Opcode::GreaterThan => "GT".to_string(),
+                Opcode::LessThan => "LT".to_string(),
+                Opcode::GreaterThanOrEqual => "GTE".to_string(),
+                Opcode::LessThanOrEqual => "LTE".to_string(),
                 Opcode::Negate => "NEG".to_string(),
                 Opcode::Add => "ADD".to_string(),
                 Opcode::Multiply => "MUL".to_string(),

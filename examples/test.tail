@@ -14,7 +14,6 @@
 #   (0 ..< 10 |i| (Y &fib) i)
 # ] "\n"
 
-##
 
 # beer n -> case n of
 #   0 => "better go to the store and buy some more."
@@ -32,6 +31,7 @@
 #   "~
 
 # join (map 5..=0 &beer) "\n"
+
 
 # merge a b ->
 #   case (len a) of
@@ -67,11 +67,13 @@
 
 # "~
 
+
 # sum a b -> add a b
 
 # const add5 -> sum 5
 
 # add5 10
+
 
 # const fruits -> {
 #   apple: { color: "red" },
@@ -150,14 +152,6 @@
 # (Y &test) 10
 
 
-greet name -> case name of
-  "John"   => "Howdy, Johnny!"
-  "Jane"   => "Hi, Jane!"
-  stranger => $"Hey there, {{stranger}}!"
-
-greet "Paul"
-
-
 # greet one ->
 #   inner two ->
 #     one
@@ -198,10 +192,78 @@ greet "Paul"
 # (outer)
 
 
+# greet name -> case name of
+#   "John"   => "Howdy, Johnny!"
+#   "Jane"   => "Hi, Jane!"
+#   _        => $"Hey there, {{name}}!"
+
+# greet "Paul"
+
+
 # Y f -> (!x -> x &x) (!y -> f (!a -> (y &y) a))
 
 # fac f -> !n -> case (lt n 2) of
 #   true  => 1
 #   false => mul n (f (sub n 1))
 
-# (Y &fac) 10
+# fib f -> !n -> case n of
+#   0 => 0
+#   1 => 1
+#   _ => add (f (sub n 1)) (f (sub n 2))
+
+# (Y &fib) 30
+
+
+# outer ->
+#   const a -> 1
+#   const b -> 2
+
+#   middle ->
+#     const c -> 3
+#     const d -> 4
+
+#     inner ->
+#       add a (add b (add c d))
+
+# ((outer))
+
+
+# vec2 x y ->
+#   get name ->
+#     const _x -> x
+#     const _y -> y
+
+#     case name of
+#       "x" => _x
+#       "y" => _y
+
+#   set name value ->
+#     const _x -> x
+#     const _y -> y
+
+#     case name of
+#       "x" => vec2 value _y
+#       "y" => vec2 _x value
+
+#   add_vec2 other ->
+#     const ox -> (other "get") "x"
+#     const oy -> (other "get") "y"
+
+#     vec2 (add x ox) (add y oy)
+
+#   !op -> case op of
+#     "get" => &get
+#     "set" => &set
+#     "add" => &add_vec2
+
+# const a -> vec2 22 10
+# (a "get") "x"
+# (a "set") "x" 33
+
+
+fib n -> case n of
+  0 => 0
+  1 => 1
+  _ => add (fib (sub n 1)) (fib (sub n 2))
+
+fib 30

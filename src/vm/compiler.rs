@@ -256,6 +256,24 @@ impl Compiler {
 
                 match callee.as_ref() {
                     AstNode::Ident { name, .. } => {
+                        let op = match name.clone().as_str() {
+                            "eq" => Some(Opcode::Equals),
+                            "ne" => Some(Opcode::NotEquals),
+                            "lt" => Some(Opcode::LessThan),
+                            "le" => Some(Opcode::LessThanOrEqual),
+                            "gt" => Some(Opcode::GreaterThan),
+                            "ge" => Some(Opcode::GreaterThanOrEqual),
+                            "add" => Some(Opcode::Add),
+                            "sub" => Some(Opcode::Subtract),
+                            "mul" => Some(Opcode::Multiply),
+                            "div" => Some(Opcode::Divide),
+                            _ => None,
+                        };
+                        if let Some(op) = op {
+                            chunk.write(op.into(), 1);
+                            return Ok(());
+                        }
+
                         self.emit_load(name, chunk);
                     }
                     AstNode::FuncCall { .. } | AstNode::Lambda { .. } | AstNode::FuncRef { .. } => {

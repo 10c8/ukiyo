@@ -123,11 +123,11 @@ fn main() {
     let start = Instant::now();
 
     let mut vm = VM::new();
+    // vm.load_stdlib();
+
     if let Err(err) = vm.interpret(chunk) {
         panic!("{:?}", err);
     }
-
-    // println!("\n{}", vm.stack);
 
     let end = Instant::now();
     let mem_after = if let Some(stats) = memory_stats::memory_stats() {

@@ -9,7 +9,6 @@ use std::{
 
 use chunk::Chunk;
 use ecow::EcoString;
-use once_cell::unsync::Lazy;
 use rustc_hash::FxHashMap;
 
 use compiler::Closure;
@@ -37,6 +36,11 @@ pub enum Opcode {
     Jump,
     JumpIfFalse,
     Equals,
+    NotEquals,
+    LessThan,
+    GreaterThan,
+    LessThanOrEqual,
+    GreaterThanOrEqual,
     #[allow(dead_code)]
     Negate,
     #[allow(dead_code)]
@@ -72,6 +76,11 @@ pub enum Value {
     String(EcoString),
     Number(f64),
     Closure(Rc<RefCell<Closure>>),
+    #[allow(dead_code)]
+    NativeFunction {
+        function: fn(&'static mut VM),
+        arity: usize,
+    },
 }
 
 impl Debug for Value {
@@ -88,6 +97,7 @@ impl Debug for Value {
                     _ => write!(f, "<fn {}>", c.name),
                 }
             }
+            Value::NativeFunction { .. } => write!(f, "<native fn>"),
         }
     }
 }
@@ -106,17 +116,18 @@ impl Display for Value {
                     _ => write!(f, "<fn {}>", c.name),
                 }
             }
+            Value::NativeFunction { .. } => write!(f, "<native fn>"),
         }
     }
 }
 
-pub struct CallFrame {
+pub struct Frame {
     closure: Rc<RefCell<Closure>>,
     pc: usize,
     offset: usize,
 }
 
-impl CallFrame {
+impl Frame {
     pub fn get_closure(&self) -> &Rc<RefCell<Closure>> {
         &self.closure
     }
@@ -142,33 +153,45 @@ pub enum VMError {
 
 type VMResult = Result<(), VMError>;
 
-const NIL_VALUE: Lazy<Rc<Value>> = Lazy::new(|| Rc::new(Value::Nil));
-const TRUE_VALUE: Lazy<Rc<Value>> = Lazy::new(|| Rc::new(Value::Bool(true)));
-const FALSE_VALUE: Lazy<Rc<Value>> = Lazy::new(|| Rc::new(Value::Bool(false)));
-const ZERO_VALUE: Lazy<Rc<Value>> = Lazy::new(|| Rc::new(Value::Number(0.0)));
-const ONE_VALUE: Lazy<Rc<Value>> = Lazy::new(|| Rc::new(Value::Number(1.0)));
-const TWO_VALUE: Lazy<Rc<Value>> = Lazy::new(|| Rc::new(Value::Number(2.0)));
-const MINUS_ONE_VALUE: Lazy<Rc<Value>> = Lazy::new(|| Rc::new(Value::Number(-1.0)));
-
 pub struct VM {
-    frames: Vec<CallFrame>,
+    frames: Vec<Frame>,
     stack: Vec<Rc<Value>>,
     globals: FxHashMap<EcoString, Rc<Value>>,
     open_upvalues: Vec<Rc<RefCell<Upvalue>>>,
+
+    nil_value: Rc<Value>,
+    true_value: Rc<Value>,
+    false_value: Rc<Value>,
+    zero_value: Rc<Value>,
+    one_value: Rc<Value>,
+    two_value: Rc<Value>,
+    minus_one_value: Rc<Value>,
 }
 
 impl VM {
-    pub fn new() -> VM {
-        VM {
+    pub fn new() -> Self {
+        Self {
             frames: Vec::new(),
             stack: Vec::new(),
             globals: FxHashMap::default(),
             open_upvalues: Vec::new(),
+
+            nil_value: Rc::new(Value::Nil),
+            true_value: Rc::new(Value::Bool(true)),
+            false_value: Rc::new(Value::Bool(false)),
+            zero_value: Rc::new(Value::Number(0.0)),
+            one_value: Rc::new(Value::Number(1.0)),
+            two_value: Rc::new(Value::Number(2.0)),
+            minus_one_value: Rc::new(Value::Number(-1.0)),
         }
     }
 
+    pub fn load_stdlib(&mut self) {
+        // TODO: implement stdlib
+    }
+
     pub fn interpret(&mut self, chunk: Chunk) -> VMResult {
-        let frame = CallFrame {
+        let frame = Frame {
             closure: Rc::new(RefCell::new(Closure {
                 name: "<program>".into(),
                 arity: 0,
@@ -189,6 +212,7 @@ impl VM {
             if let Some(op) = self.read_byte() {
                 let op = Opcode::from(op);
 
+                /*
                 {
                     let frame = self.frames.last().unwrap();
                     let closure = frame.get_closure().borrow();
@@ -386,6 +410,7 @@ impl VM {
 
                     println!("{:#04}  {:04} {}  {}", pc - 1, line, data, instruction);
                 }
+                */
 
                 match op {
                     Opcode::LoadConstant => self.op_ld_const(false)?,
@@ -394,18 +419,23 @@ impl VM {
                     Opcode::LoadLocal => self.op_ld_local()?,
                     Opcode::LoadGlobal => self.op_ld_global()?,
                     Opcode::LoadUpvalue => self.op_ld_upval()?,
-                    Opcode::LoadTrue => self.stack.push(TRUE_VALUE.clone()),
-                    Opcode::LoadFalse => self.stack.push(FALSE_VALUE.clone()),
-                    Opcode::LoadZero => self.stack.push(ZERO_VALUE.clone()),
-                    Opcode::LoadOne => self.stack.push(ONE_VALUE.clone()),
-                    Opcode::LoadTwo => self.stack.push(TWO_VALUE.clone()),
-                    Opcode::LoadMinusOne => self.stack.push(MINUS_ONE_VALUE.clone()),
+                    Opcode::LoadTrue => self.stack.push(self.true_value.clone()),
+                    Opcode::LoadFalse => self.stack.push(self.false_value.clone()),
+                    Opcode::LoadZero => self.stack.push(self.zero_value.clone()),
+                    Opcode::LoadOne => self.stack.push(self.one_value.clone()),
+                    Opcode::LoadTwo => self.stack.push(self.two_value.clone()),
+                    Opcode::LoadMinusOne => self.stack.push(self.minus_one_value.clone()),
                     Opcode::Call => self.op_call()?,
                     Opcode::GenClosure => self.op_gen_closure()?,
                     Opcode::Pop => self.op_pop()?,
                     Opcode::Jump => self.op_jmp()?,
                     Opcode::JumpIfFalse => self.op_jf()?,
                     Opcode::Equals => self.op_eq()?,
+                    Opcode::NotEquals => self.op_neq()?,
+                    Opcode::LessThan => self.op_lt()?,
+                    Opcode::GreaterThan => self.op_gt()?,
+                    Opcode::LessThanOrEqual => self.op_lte()?,
+                    Opcode::GreaterThanOrEqual => self.op_gte()?,
                     Opcode::Negate => self.op_neg()?,
                     Opcode::Add => self.op_add()?,
                     Opcode::Subtract => self.op_sub()?,
@@ -413,7 +443,7 @@ impl VM {
                     Opcode::Divide => self.op_div()?,
                     Opcode::Concatenate => self.op_concat()?,
                     Opcode::Return => {
-                        let result = self.stack.pop().unwrap_or(NIL_VALUE.clone());
+                        let result = self.stack.pop().unwrap_or(self.nil_value.clone());
 
                         self.close_upvalues(self.frames.last().unwrap().offset);
 
@@ -421,11 +451,6 @@ impl VM {
 
                         if self.frames.is_empty() {
                             println!("\n>>> RESULT = {:?}", result);
-
-                            println!(">>> GLOBALS");
-                            for (name, value) in &self.globals {
-                                println!("{} = {:?}", name, value);
-                            }
 
                             println!(">>> STACK");
                             for value in &self.stack {
@@ -482,13 +507,25 @@ impl VM {
 
                 // println!("{}", closure.chunk);
 
-                let frame = CallFrame {
+                let frame = Frame {
                     closure: value.clone(),
                     pc: 0,
                     offset: (self.stack.len() as isize - argc as isize) as usize,
                 };
 
                 self.frames.push(frame);
+            }
+            Value::NativeFunction { function, arity } => {
+                if argc != *arity {
+                    panic!("call_value: expected {} arguments, got {}", arity, argc);
+                }
+
+                // Safety: `self` is guaranteed to be valid for the lifetime of the program.
+                // Also, I have no idea what I'm doing, but it works.
+                unsafe {
+                    let self_ref = self as *mut VM;
+                    function(&mut *self_ref);
+                }
             }
             _ => {
                 if argc > 0 {
@@ -769,8 +806,7 @@ impl VM {
                     //         .upvalues
                     //         .get(idx as usize)
                     //         .unwrap()
-                    //         .lock()
-                    //         .unwrap()
+                    //         .borrow()
                     //         .value,
                     // );
 
@@ -779,7 +815,7 @@ impl VM {
                 }
             }
 
-            self.stack.pop();
+            self.stack.truncate(self.stack.len() - 1);
             self.stack.push(value.clone());
 
             return Ok(());
@@ -858,11 +894,119 @@ impl VM {
         let a = self.stack.pop();
 
         if let (Some(a), Some(b)) = (a, b) {
-            self.stack.push(Value::Bool(a == b).into());
+            let result = match a == b {
+                true => self.true_value.clone(),
+                false => self.false_value.clone(),
+            };
+
+            self.stack.push(result);
             return Ok(());
         }
 
         println!("eq: invalid operands");
+        Err(VMError::RuntimeError)
+    }
+
+    // NEQ
+    fn op_neq(&mut self) -> VMResult {
+        let b = self.stack.pop();
+        let a = self.stack.pop();
+
+        if let (Some(a), Some(b)) = (a, b) {
+            let result = match a != b {
+                true => self.true_value.clone(),
+                false => self.false_value.clone(),
+            };
+
+            self.stack.push(result);
+            return Ok(());
+        }
+
+        println!("neq: invalid operands");
+        Err(VMError::RuntimeError)
+    }
+
+    // LT
+    fn op_lt(&mut self) -> VMResult {
+        let b = self.stack.pop();
+        let a = self.stack.pop();
+
+        if let (Some(a), Some(b)) = (a, b) {
+            if let (Value::Number(a), Value::Number(b)) = (a.as_ref(), b.as_ref()) {
+                let result = match a < b {
+                    true => self.true_value.clone(),
+                    false => self.false_value.clone(),
+                };
+
+                self.stack.push(result);
+                return Ok(());
+            }
+        }
+
+        println!("lt: invalid operands");
+        Err(VMError::RuntimeError)
+    }
+
+    // GT
+    fn op_gt(&mut self) -> VMResult {
+        let b = self.stack.pop();
+        let a = self.stack.pop();
+
+        if let (Some(a), Some(b)) = (a, b) {
+            if let (Value::Number(a), Value::Number(b)) = (a.as_ref(), b.as_ref()) {
+                let result = match a > b {
+                    true => self.true_value.clone(),
+                    false => self.false_value.clone(),
+                };
+
+                self.stack.push(result);
+                return Ok(());
+            }
+        }
+
+        println!("gt: invalid operands");
+        Err(VMError::RuntimeError)
+    }
+
+    // LTE
+    fn op_lte(&mut self) -> VMResult {
+        let b = self.stack.pop();
+        let a = self.stack.pop();
+
+        if let (Some(a), Some(b)) = (a, b) {
+            if let (Value::Number(a), Value::Number(b)) = (a.as_ref(), b.as_ref()) {
+                let result = match a <= b {
+                    true => self.true_value.clone(),
+                    false => self.false_value.clone(),
+                };
+
+                self.stack.push(result);
+                return Ok(());
+            }
+        }
+
+        println!("lte: invalid operands");
+        Err(VMError::RuntimeError)
+    }
+
+    // GTE
+    fn op_gte(&mut self) -> VMResult {
+        let b = self.stack.pop();
+        let a = self.stack.pop();
+
+        if let (Some(a), Some(b)) = (a, b) {
+            if let (Value::Number(a), Value::Number(b)) = (a.as_ref(), b.as_ref()) {
+                let result = match a >= b {
+                    true => self.true_value.clone(),
+                    false => self.false_value.clone(),
+                };
+
+                self.stack.push(result);
+                return Ok(());
+            }
+        }
+
+        println!("gte: invalid operands");
         Err(VMError::RuntimeError)
     }
 

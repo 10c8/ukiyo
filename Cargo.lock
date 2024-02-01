@@ -864,7 +864,6 @@ dependencies = [
  "codespan-reporting",
  "ecow",
  "memory-stats",
- "once_cell",
  "rand",
  "regex",
  "reqwest",
