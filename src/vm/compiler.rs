@@ -92,6 +92,8 @@ impl Compiler {
 
                 chunk.write(Opcode::Return.into(), 1);
 
+                self.optimize(chunk);
+
                 Ok(())
             }
             AstNode::Block { body, .. } => {
@@ -167,7 +169,76 @@ impl Compiler {
 
                 Ok(())
             }
-            AstNode::Case { expr, cases, .. } => {
+            AstNode::IfExpr {
+                cond,
+                then,
+                elifs,
+                else_,
+                ..
+            } => {
+                self.compile(cond, chunk)?;
+
+                // Jump to the next condition if the first one doesn't match
+                chunk.write(Opcode::JumpIfFalse.into(), 1);
+                chunk.write(0xff, 1);
+                chunk.write(0xff, 1);
+                chunk.write(0xff, 1);
+
+                let then_jmp = chunk.code.len() - 3;
+
+                self.compile(then, chunk)?;
+
+                // Jump to the end of the if block once the then block has been executed
+                chunk.write(Opcode::Jump.into(), 1);
+                chunk.write(0xff, 1);
+                chunk.write(0xff, 1);
+                chunk.write(0xff, 1);
+
+                let mut end_jumps = Vec::new();
+
+                let end_jmp = chunk.code.len() - 3;
+                end_jumps.push(end_jmp);
+
+                for (cond, body) in elifs.iter() {
+                    self.patch_jump(then_jmp, chunk);
+
+                    self.compile(cond, chunk)?;
+
+                    // Jump to the next condition if the previous one doesn't match
+                    chunk.write(Opcode::JumpIfFalse.into(), 1);
+                    chunk.write(0xff, 1);
+                    chunk.write(0xff, 1);
+                    chunk.write(0xff, 1);
+
+                    let no_match_jmp = chunk.code.len() - 3;
+
+                    self.compile(body, chunk)?;
+
+                    // Jump to the end of the if block once the body has been executed
+                    chunk.write(Opcode::Jump.into(), 1);
+                    chunk.write(0xff, 1);
+                    chunk.write(0xff, 1);
+                    chunk.write(0xff, 1);
+
+                    let end_jmp = chunk.code.len() - 3;
+                    end_jumps.push(end_jmp);
+
+                    self.patch_jump(no_match_jmp, chunk);
+                }
+
+                if elifs.is_empty() {
+                    self.patch_jump(then_jmp, chunk);
+                }
+
+                self.compile(else_, chunk)?;
+
+                for end_jmp in end_jumps.iter() {
+                    self.patch_jump(*end_jmp, chunk);
+                }
+
+                Ok(())
+            }
+            AstNode::CaseExpr { expr, cases, .. } => {
                 let mut end_jmps = Vec::new();
 
                 for (i, case) in cases.iter().enumerate() {
@@ -327,6 +398,39 @@ impl Compiler {
         }
     }
 
+    fn optimize(&self, chunk: &mut Chunk) {
+        for i in 0..chunk.code.len() {
+            let op = chunk.code[i];
+            if op >= Opcode::LAST as u8 {
+                continue;
+            }
+
+            let op = Opcode::from(op);
+            match op {
+                Opcode::Jump => {
+                    let offset = (chunk.code[i + 1] as usize)
+                        | ((chunk.code[i + 2] as usize) << 8)
+                        | ((chunk.code[i + 3] as usize) << 16);
+
+                    let op_at_offset = chunk.code[i + offset + 4];
+                    match Opcode::from(op_at_offset) {
+                        Opcode::Return => {
+                            // A jump to a return statement can be replaced with a return
+                            chunk.code[i] = Opcode::Return as u8;
+                            chunk.code[i + 1] = Opcode::Nop.into();
+                            chunk.code[i + 2] = Opcode::Nop.into();
+                            chunk.code[i + 3] = Opcode::Nop.into();
+
+                            println!("optimized jump to return");
+                        }
+                        _ => {}
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
     fn emit_load(&mut self, name: &EcoString, chunk: &mut Chunk) {
         // Try to find the variable in the local scope
         let state = self.states.last().unwrap();
@@ -416,6 +520,8 @@ impl Compiler {
 
         closure_chunk.write(Opcode::Return.into(), 1);
 
+        self.optimize(&mut closure_chunk);
+
         let name = if let Some(name) = name {
             name.clone()
         } else {
@@ -450,7 +556,7 @@ impl Compiler {
 
         // If the function captures any upvalues, we need to turn it into a closure
         if !upvalue_refs.is_empty() {
-            chunk.write(Opcode::GenClosure.into(), 1);
+            chunk.write(Opcode::LoadClosure.into(), 1);
             chunk.write(closure_id as u8, 1);
         }
 

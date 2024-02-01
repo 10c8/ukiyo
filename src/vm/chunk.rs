@@ -95,7 +95,7 @@ impl Display for Chunk {
                         if let Some(value) = self.constants.get(*idx as usize) {
                             data = format!(".. .. {:02x} {:02x}", op, idx).into();
 
-                            format!("LOAD_CONST {:08} = {}", idx, value)
+                            format!("LD_CONST {:08} = {}", idx, value)
                         } else {
                             panic!("unknown constant");
                         }
@@ -120,7 +120,7 @@ impl Display for Chunk {
                     };
 
                     if let Some(value) = self.constants.get(idx) {
-                        format!("LOAD_CONST {:08} = {}", idx, value)
+                        format!("LD_CONST {:08} = {}", idx, value)
                     } else {
                         panic!("unknown constant: {}", idx);
                     }
@@ -160,7 +160,7 @@ impl Display for Chunk {
                         panic!("missing argument count");
                     }
                 }
-                Opcode::GenClosure => {
+                Opcode::LoadClosure => {
                     let idx = if let Some((_, idx)) = code.next() {
                         *idx as usize
                     } else {
@@ -178,7 +178,7 @@ impl Display for Chunk {
 
                         data = format!(".. .. {:02x} {:02x}", op, idx).into();
 
-                        let mut line = String::from(format!("GEN_CLOSURE {:02x} = {}", idx, value));
+                        let mut line = String::from(format!("LD_CLOSURE {:02x} = {}", idx, value));
 
                         for upvalue in &closure.upvalue_refs {
                             line.push_str(&format!(
@@ -216,7 +216,7 @@ impl Display for Chunk {
                             panic!("missing jump offset");
                         };
 
-                    format!("JMP {:06x}", offset)
+                    format!("JMP {:06x} ({})", offset, i + offset as usize)
                 }
                 Opcode::JumpIfFalse => {
                     let offset_lo = code.next();
@@ -255,6 +255,7 @@ impl Display for Chunk {
                 Opcode::Subtract => "SUB".to_string(),
                 Opcode::Concatenate => "CONCAT".to_string(),
                 Opcode::Return => "RET".to_string(),
+                Opcode::Nop => "NOP".to_string(),
                 _ => todo!("opcode: {:?}", Opcode::from(*op)),
             };
 

@@ -31,7 +31,7 @@ pub enum Opcode {
     #[allow(dead_code)]
     LoadMinusOne,
     Call,
-    GenClosure,
+    LoadClosure,
     Pop,
     Jump,
     JumpIfFalse,
@@ -53,12 +53,15 @@ pub enum Opcode {
     Divide,
     Concatenate,
     Return,
+    Nop,
     LAST,
 }
 
 impl From<u8> for Opcode {
     fn from(byte: u8) -> Self {
         assert!(byte <= Opcode::LAST as u8);
+
+        // Safety: `byte` is guaranteed to be a valid `Opcode` variant.
         unsafe { std::mem::transmute(byte) }
     }
 }
@@ -178,7 +181,18 @@ impl VM {
     }
 
     pub fn load_stdlib(&mut self) {
-        // TODO: implement stdlib
+        self.globals.insert(
+            "trace".into(),
+            Rc::new(Value::NativeFunction {
+                function: VM::std_trace,
+                arity: 1,
+            }),
+        );
+    }
+
+    fn std_trace(&mut self) {
+        let value = self.stack.pop().unwrap();
+        println!("{}", value);
     }
 
     pub fn interpret(&mut self, chunk: Chunk) -> VMResult {
@@ -311,7 +325,7 @@ impl VM {
                                 data = format!(".. .. {:02x} {:02x}", op as u8, idx).into();
 
                                 let mut line =
-                                    String::from(format!("GEN_CLOSURE {:02x} = {}", idx, value));
+                                    String::from(format!("LD_CLOSURE {:02x} = {}", idx, value));
 
                                 for upvalue in &closure.upvalue_refs {
                                     line.push_str(&format!(
@@ -411,7 +425,7 @@ impl VM {
                     Opcode::LoadTwo => self.stack.push(self.two_value.clone()),
                     Opcode::LoadMinusOne => self.stack.push(self.minus_one_value.clone()),
                     Opcode::Call => self.op_call()?,
-                    Opcode::GenClosure => self.op_gen_closure()?,
+                    Opcode::LoadClosure => self.op_gen_closure()?,
                     Opcode::Pop => self.op_pop()?,
                     Opcode::Jump => self.op_jmp()?,
                     Opcode::JumpIfFalse => self.op_jf()?,
@@ -446,6 +460,7 @@ impl VM {
                         self.stack.truncate(frame.offset);
                         self.stack.push(result);
                     }
+                    Opcode::Nop => {}
                     _ => todo!("unknown opcode: {:?}", op),
                 }
             } else {
@@ -674,7 +689,7 @@ impl VM {
         return Ok(());
     }
 
-    // GEN_CLOSURE
+    // LD_CLOSURE
     fn op_gen_closure(&mut self) -> VMResult {
         let closure_id = if let Some(closure_id) = self.read_byte() {
             closure_id as usize
@@ -695,7 +710,7 @@ impl VM {
             }
         };
 
-        // println!(">>> GEN_CLOSURE {:02x}", closure_id);
+        // println!(">>> LD_CLOSURE {:02x}", closure_id);
 
         if let Value::Closure(closure) = value {
             let closure = &mut closure.borrow_mut();
@@ -749,7 +764,7 @@ impl VM {
 
             // println!("upvalues: {:#?}", closure.upvalues);
 
-            self.stack.truncate(self.stack.len() - 1);
+            self.stack.pop();
 
             let closure = chunk.get_constant(closure_id).unwrap().clone();
             self.stack.push(closure);

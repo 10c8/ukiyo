@@ -211,7 +211,17 @@
 #   1 => 1
 #   _ => add (f (sub n 1)) (f (sub n 2))
 
-# (Y &fib) 30
+# (Y &fib) 35
+
+
+# loop n ->
+#   if (eq n 0) then
+#     0
+#   else
+#     print n
+#     loop (sub n 1)
+
+# loop 100000
 
 
 # outer ->
@@ -278,8 +288,14 @@
 # test2 "a"
 
 
-fib n -> case (lt n 2) of
-  true  => n
-  false => add (fib (sub n 1)) (fib (sub n 2))
+# fib n -> case (lt n 2) of
+#   true  => n
+#   false => add (fib (sub n 1)) (fib (sub n 2))
+
+
+fib n -> if (lt n 2) then
+  n
+else
+  add (fib (sub n 1)) (fib (sub n 2))
 
 fib 30

@@ -45,7 +45,14 @@ pub enum AstNode {
         id: Box<AstNode>,
         range: Range,
     },
-    Case {
+    IfExpr {
+        cond: Box<AstNode>,
+        then: Box<AstNode>,
+        elifs: EcoVec<(AstNode, AstNode)>,
+        else_: Box<AstNode>,
+        range: Range,
+    },
+    CaseExpr {
         expr: Box<AstNode>,
         cases: EcoVec<AstNode>,
         range: Range,
@@ -137,7 +144,8 @@ impl AstNode {
             | AstNode::FuncDecl { range, .. }
             | AstNode::Lambda { range, .. }
             | AstNode::FuncRef { range, .. }
-            | AstNode::Case { range, .. }
+            | AstNode::IfExpr { range, .. }
+            | AstNode::CaseExpr { range, .. }
             | AstNode::CaseBranch { range, .. }
             | AstNode::CasePattern { range, .. }
             | AstNode::FuncCall { range, .. }
@@ -455,6 +463,10 @@ impl Parser {
                     if expected.len() == 1 {
                         let article = match expected[0].chars().next().unwrap() {
                             'a' | 'e' | 'i' | 'o' | 'u' => "an",
+                            '`' => match expected[0].chars().nth(1).unwrap() {
+                                'a' | 'e' | 'i' | 'o' | 'u' => "an",
+                                _ => "a",
+                            },
                             _ => "a",
                         };
                         format!("Expected {} {}.", article, expected[0])
@@ -590,26 +602,30 @@ impl Parser {
     fn parse_stmt(&mut self) -> PResult {
         any! {
             self: parse_func_decl, "function declaration"
-                | parse_case, "case statement"
                 | parse_expr_stmt, "expression"
         }
     }
 
     fn parse_expr_stmt(&mut self) -> PResult {
         let expr = any! {
-            self: parse_indexing, "indexing"
+            self: parse_if, "if expression"
+                | parse_case, "case expression"
+                | parse_lambda, "lambda"
+                | parse_func_decl, "function declaration"
+                | parse_indexing, "indexing"
                 | parse_concat, "concatenation"
                 | parse_iteration_op, "iterator"
                 | parse_func_call, "function call"
                 | parse_expr, "expression"
         }?;
-        let range = expr.range();
 
         // Evaluate possible format string
         let expr = match expr {
             AstNode::FmtString { .. } => self.eval_fmt_string(expr)?,
             _ => expr,
         };
+
+        let range = expr.range();
 
         Ok(AstNode::ExprStmt {
             expr: Box::new(expr),
@@ -632,13 +648,7 @@ impl Parser {
             }
         }
 
-        cut!(self: parse_dedent)?;
-
-        if body.is_empty() {
-            return Err(ParseError::Unexpected {
-                expected: &["block statement"],
-            });
-        }
+        self.parse_dedent()?;
 
         let range = (
             body.first().map(|stmt| stmt.range().0).unwrap_or(0),
@@ -651,19 +661,10 @@ impl Parser {
     fn parse_block_stmt(&mut self) -> PResult {
         let result = any! {
             self: parse_func_decl, "function declaration"
-                | parse_case, "case statement"
-                | parse_indexing, "indexing"
-                | parse_concat, "concatenation"
-                | parse_iteration_op, "iterator"
-                | parse_func_call, "function call"
-                | parse_expr, "expression"
+                | parse_expr_stmt, "expression"
         }?;
 
-        // Evaluate possible format string
-        match result {
-            AstNode::FmtString { .. } => self.eval_fmt_string(result),
-            _ => Ok(result),
-        }
+        Ok(result)
     }
 
     fn parse_func_decl(&mut self) -> PResult {
@@ -758,21 +759,10 @@ impl Parser {
     fn parse_func_body(&mut self) -> PResult {
         let body = any! {
             self: parse_block, "indented block"
-                | parse_case, "case statement"
                 | parse_lambda, "lambda"
-                | parse_indexing, "indexing"
-                | parse_concat, "concatenation"
                 | parse_func_decl, "function declaration"
-                | parse_iteration_op, "iterator"
-                | parse_func_call, "function call"
-                | parse_expr, "expression"
+                | parse_expr_stmt, "expression"
         }?;
-
-        // Evaluate possible format string
-        let body = match body {
-            AstNode::FmtString { .. } => self.eval_fmt_string(body)?,
-            _ => body,
-        };
 
         match body {
             AstNode::Block { .. } => Ok(body),
@@ -783,6 +773,61 @@ impl Parser {
                     range,
                 })
             }
+        }
+    }
+
+    fn parse_if(&mut self) -> PResult {
+        let if_ = token!("`if`"; self: Token::Keyword { name: Keyword::If, .. })?;
+
+        let cond = cut!(self: parse_expr)?;
+
+        let then = token!("`then`"; self: Token::Keyword { name: Keyword::Then, .. });
+        self.cut(then)?;
+
+        let then_body = cut!(self: parse_block_or_expr)?;
+
+        self.ignore_nl()?;
+
+        let mut elifs = EcoVec::new();
+
+        loop {
+            let elif = opt!(self: Token::Keyword { name: Keyword::Elif, .. });
+            if elif.is_none() {
+                break;
+            }
+
+            let cond = cut!(self: parse_expr)?;
+
+            let then = token!("`then`"; self: Token::Keyword { name: Keyword::Then, .. });
+            self.cut(then)?;
+
+            let then_body = cut!(self: parse_block_or_expr)?;
+
+            elifs.push((cond, then_body));
+
+            self.ignore_nl()?;
+        }
+
+        let else_ = token!("`else`"; self: Token::Keyword { name: Keyword::Else, .. });
+        self.cut(else_)?;
+
+        let else_body = cut!(self: parse_block_or_expr)?;
+
+        let range = (if_.span().range.0, else_body.range().1);
+
+        Ok(AstNode::IfExpr {
+            cond: Box::new(cond),
+            then: Box::new(then_body.clone()),
+            elifs,
+            else_: Box::new(else_body),
+            range,
+        })
+    }
+
+    fn parse_block_or_expr(&mut self) -> PResult {
+        any! {
+            self: parse_block, "indented block"
+                | parse_expr_stmt, "expression"
         }
     }
 
@@ -808,7 +853,7 @@ impl Parser {
             _ => expr,
         };
 
-        Ok(AstNode::Case {
+        Ok(AstNode::CaseExpr {
             expr: Box::new(expr),
             cases: cases.into(),
             range,
@@ -850,12 +895,6 @@ impl Parser {
         let body = cut!(self: parse_case_body)?;
 
         let range = (pattern.range().0, body.range().1);
-
-        // Evaluate possible format string
-        let body = match body {
-            AstNode::FmtString { .. } => self.eval_fmt_string(body)?,
-            _ => body,
-        };
 
         Ok(AstNode::CaseBranch {
             pattern: Box::new(pattern),
@@ -915,11 +954,7 @@ impl Parser {
     fn parse_case_body(&mut self) -> PResult {
         any! {
             self: parse_block, "indented block"
-                | parse_case, "case statement"
-                | parse_concat, "concatenation"
-                | parse_indexing, "indexing"
-                | parse_func_call, "function call"
-                | parse_expr, "expression"
+                | parse_expr_stmt, "expression"
         }
     }
 
@@ -965,8 +1000,6 @@ impl Parser {
     fn parse_expr(&mut self) -> PResult {
         any! {
             self: parse_range, "range"
-                | parse_indexing, "indexing"
-                | parse_concat, "concatenation"
                 | parse_identifier, "identifier"
                 | parse_bool, "boolean"
                 | parse_string, "string"
@@ -974,9 +1007,8 @@ impl Parser {
                 | parse_number, "number"
                 | parse_list, "list"
                 | parse_record, "record"
-                | parse_par_expr, "expression"
                 | parse_func_ref, "function reference"
-                | parse_lambda, "lambda"
+                | parse_par_expr, "expression"
         }
     }
 
@@ -1158,8 +1190,6 @@ impl Parser {
 
         let right = any! {
             self: parse_block, "indented block"
-                | parse_case, "case statement"
-                | parse_func_call, "function call"
                 | parse_expr_stmt, "expression"
         };
         let right = self.cut(right)?;
@@ -1584,24 +1614,16 @@ impl Parser {
 
         self.ignore_nl_and_ws()?;
 
-        let expr = any! {
-            self: parse_indexing, "indexing"
-                | parse_concat, "concatenation"
-                | parse_iteration_op, "iterator"
-                | parse_func_call, "function call"
-                | parse_expr, "expression"
-        };
-        let expr = self.cut(expr)?;
+        let expr = cut!(self: parse_expr_stmt)?;
 
         self.ignore_nl_and_ws()?;
 
         let end = token!("`)`"; self: Token::Symbol { value: ')', .. });
         self.cut(end)?;
 
-        // Evaluate possible format string
         let expr = match expr {
-            AstNode::FmtString { .. } => self.eval_fmt_string(expr)?,
-            _ => expr,
+            AstNode::ExprStmt { expr, .. } => *expr,
+            _ => unreachable!(),
         };
 
         Ok(expr)
