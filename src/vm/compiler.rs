@@ -9,8 +9,6 @@ use super::{chunk::Chunk, Opcode, Upvalue, Value};
 #[derive(Debug, Clone)]
 pub struct Local {
     name: EcoString,
-    #[allow(dead_code)]
-    depth: usize,
     is_capture: bool,
 }
 
@@ -31,7 +29,7 @@ pub struct Closure {
     pub name: EcoString,
     pub arity: usize,
     pub chunk: Chunk,
-    pub upvalues: Vec<Rc<RefCell<Upvalue>>>,
+    pub upvalues: Vec<Rc<Upvalue>>,
     pub upvalue_refs: Vec<UpvalueRef>,
 }
 
@@ -103,16 +101,8 @@ impl Compiler {
                     self.compile(node, chunk)?;
                 }
 
-                self.states.last_mut().unwrap().scope_depth -= 1;
-
-                // TODO: Handle locals in non-closure blocks
-                // while !state.locals.is_empty()
-                //     && state.locals.last().unwrap().depth > state.scope_depth
-                // {
-                //     chunk.write(Opcode::Pop.into(), 1);
-
-                //     state.locals.pop();
-                // }
+                let state = &mut self.states.last_mut().unwrap();
+                state.scope_depth -= 1;
 
                 Ok(())
             }
@@ -374,7 +364,6 @@ impl Compiler {
 
             let local = Local {
                 name,
-                depth: state.scope_depth,
                 is_capture: false,
             };
             state.locals.push(local);
@@ -418,7 +407,6 @@ impl Compiler {
 
             let local = Local {
                 name,
-                depth: closure_depth,
                 is_capture: false,
             };
             closure_state.locals.push(local);
@@ -438,6 +426,8 @@ impl Compiler {
 
             EcoString::from(format!("<λ {:08x}>", last_state.lambda_id - 1))
         };
+
+        println!("[{}]\n{}", name, closure_chunk);
 
         let upvalue_refs = &self.states.last().unwrap().upvalue_refs.clone();
         let closure = Closure {
@@ -462,11 +452,6 @@ impl Compiler {
         if !upvalue_refs.is_empty() {
             chunk.write(Opcode::GenClosure.into(), 1);
             chunk.write(closure_id as u8, 1);
-
-            for u in upvalue_refs.iter() {
-                chunk.write(u.index, 1);
-                chunk.write(u.is_local as u8, 1);
-            }
         }
 
         Ok(())

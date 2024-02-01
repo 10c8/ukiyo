@@ -218,6 +218,9 @@
 #   const a -> 1
 #   const b -> 2
 
+#   trash ->
+#     add a b
+
 #   middle ->
 #     const c -> 3
 #     const d -> 4
@@ -230,20 +233,14 @@
 
 # vec2 x y ->
 #   get name ->
-#     const _x -> x
-#     const _y -> y
-
 #     case name of
-#       "x" => _x
-#       "y" => _y
+#       "x" => x
+#       "y" => y
 
 #   set name value ->
-#     const _x -> x
-#     const _y -> y
-
 #     case name of
-#       "x" => vec2 value _y
-#       "y" => vec2 _x value
+#       "x" => vec2 value y
+#       "y" => vec2 x value
 
 #   add_vec2 other ->
 #     const ox -> (other "get") "x"
@@ -257,13 +254,32 @@
 #     "add" => &add_vec2
 
 # const a -> vec2 22 10
-# (a "get") "x"
-# (a "set") "x" 33
+# const b -> vec2 33 20
+
+# const c -> (a "add") &b
+# (c "get") "x"
 
 
-fib n -> case n of
-  0 => 0
-  1 => 1
-  _ => add (fib (sub n 1)) (fib (sub n 2))
+# outer a b ->
+#   first -> add a b
+
+#   second -> sub a b
+
+#   !op -> case op of
+#     "a"      => a
+#     "b"      => b
+#     "first"  => first
+#     "second" => second
+#     "double" => outer (mul a 2) (mul b 2)
+
+# const test -> outer 10 20
+
+# const test2 -> test "double"
+# test2 "a"
+
+
+fib n -> case (lt n 2) of
+  true  => n
+  false => add (fib (sub n 1)) (fib (sub n 2))
 
 fib 30

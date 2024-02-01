@@ -133,17 +133,10 @@ impl Frame {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub enum UpvalueKind {
-    Open,
-    Closed,
-}
-
 #[derive(Debug, Clone)]
 pub struct Upvalue {
-    pub kind: UpvalueKind,
-    pub slot: Option<usize>,
-    pub value: Rc<Value>,
+    pub slot: usize,
+    pub value: Option<Rc<Value>>,
 }
 
 #[derive(Debug)]
@@ -157,7 +150,6 @@ pub struct VM {
     frames: Vec<Frame>,
     stack: Vec<Rc<Value>>,
     globals: FxHashMap<EcoString, Rc<Value>>,
-    open_upvalues: Vec<Rc<RefCell<Upvalue>>>,
 
     nil_value: Rc<Value>,
     true_value: Rc<Value>,
@@ -174,7 +166,6 @@ impl VM {
             frames: Vec::new(),
             stack: Vec::new(),
             globals: FxHashMap::default(),
-            open_upvalues: Vec::new(),
 
             nil_value: Rc::new(Value::Nil),
             true_value: Rc::new(Value::Bool(true)),
@@ -278,18 +269,10 @@ impl VM {
                             if let Some(idx) = chunk.read(pc) {
                                 data = format!(".. .. {:02x} {:02x}", op as u8, idx).into();
 
-                                let upvalue = closure.upvalues.get(*idx as usize).unwrap().borrow();
-                                match upvalue.kind {
-                                    UpvalueKind::Open => {
-                                        let slot = upvalue.slot.unwrap();
-                                        let value = self.stack.get(slot).unwrap();
-                                        format!("LD_UPVAL {:02x} (OPEN) = {:?}", idx, value)
-                                    }
-                                    UpvalueKind::Closed => {
-                                        let value = upvalue.value.clone();
-                                        format!("LD_UPVAL {:02x} (CLOSED) = {:?}", idx, value)
-                                    }
-                                }
+                                let upvalue = closure.upvalues.get(*idx as usize).unwrap();
+                                let value = upvalue.value.as_ref().unwrap();
+
+                                format!("LD_UPVAL {:02x} (CLOSED) = {:?}", idx, value)
                             } else {
                                 panic!("missing upvalue id");
                             }
@@ -325,13 +308,10 @@ impl VM {
                             if let Value::Closure(closure) = value.as_ref() {
                                 let closure = closure.borrow();
 
-                                data = format!(".. .. .. {:02x}", op as u8).into();
+                                data = format!(".. .. {:02x} {:02x}", op as u8, idx).into();
 
-                                let mut line = String::from(format!(
-                                    "GEN_CLOSURE {} * {:03x}",
-                                    value,
-                                    closure.upvalue_refs.len()
-                                ));
+                                let mut line =
+                                    String::from(format!("GEN_CLOSURE {:02x} = {}", idx, value));
 
                                 for upvalue in &closure.upvalue_refs {
                                     line.push_str(&format!(
@@ -396,6 +376,11 @@ impl VM {
                             format!("JF {:06x}", offset)
                         }
                         Opcode::Equals => "EQ".to_string(),
+                        Opcode::NotEquals => "NEQ".to_string(),
+                        Opcode::LessThan => "LT".to_string(),
+                        Opcode::GreaterThan => "GT".to_string(),
+                        Opcode::LessThanOrEqual => "LTE".to_string(),
+                        Opcode::GreaterThanOrEqual => "GTE".to_string(),
                         Opcode::Negate => "NEG".to_string(),
                         Opcode::Add => "ADD".to_string(),
                         Opcode::Multiply => "MUL".to_string(),
@@ -403,7 +388,7 @@ impl VM {
                         Opcode::Subtract => "SUB".to_string(),
                         Opcode::Concatenate => "CONCAT".to_string(),
                         Opcode::Return => "RET".to_string(),
-                        _ => todo!(),
+                        _ => todo!("unknown opcode: {:?}", op),
                     };
 
                     let line = chunk.get_line(pc).unwrap();
@@ -444,8 +429,6 @@ impl VM {
                     Opcode::Concatenate => self.op_concat()?,
                     Opcode::Return => {
                         let result = self.stack.pop().unwrap_or(self.nil_value.clone());
-
-                        self.close_upvalues(self.frames.last().unwrap().offset);
 
                         let frame = self.frames.pop().unwrap();
 
@@ -521,7 +504,7 @@ impl VM {
                 }
 
                 // Safety: `self` is guaranteed to be valid for the lifetime of the program.
-                // Also, I have no idea what I'm doing, but it works.
+                // Also, I have no idea what I'm doing, but it works. I think. ¯\_(ツ)_/¯
                 unsafe {
                     let self_ref = self as *mut VM;
                     function(&mut *self_ref);
@@ -535,30 +518,6 @@ impl VM {
                 self.stack.push(callee.clone());
             }
         }
-    }
-
-    fn close_upvalues(&mut self, last: usize) {
-        let mut i = self.open_upvalues.len() as isize;
-        loop {
-            if i < 1 {
-                break;
-            }
-
-            let mut u = self.open_upvalues.get(i as usize - 1).unwrap().borrow_mut();
-
-            let slot = u.slot.unwrap();
-            if slot < last {
-                break;
-            }
-
-            (*u).kind = UpvalueKind::Closed;
-            (*u).slot = None;
-            (*u).value = self.stack.get(slot).unwrap().clone();
-
-            i -= 1;
-        }
-
-        self.open_upvalues.truncate(i as usize);
     }
 
     // LD_CONST <id: u8>
@@ -673,17 +632,14 @@ impl VM {
             let frame = self.frames.last().unwrap();
             let closure = frame.get_closure().borrow();
 
-            if let Some(upvalue) = closure.upvalues.get(idx as usize) {
-                let upvalue = upvalue.borrow();
-                let value = match upvalue.kind {
-                    UpvalueKind::Open => {
-                        let slot = upvalue.slot.unwrap();
-                        self.stack.get(slot).unwrap().clone()
-                    }
-                    UpvalueKind::Closed => upvalue.value.clone(),
-                };
+            // println!("idx = {} (offset: {})", idx, frame.offset);
+            // println!("upvalues: {:#?}", closure.upvalues);
 
-                self.stack.push(value.clone());
+            if let Some(upvalue) = closure.upvalues.get(idx as usize) {
+                let upvalue = upvalue.as_ref();
+                let value = upvalue.value.as_ref().unwrap().clone();
+
+                self.stack.push(value);
                 return Ok(());
             }
 
@@ -727,96 +683,76 @@ impl VM {
             return Err(VMError::RuntimeError);
         };
 
-        let value = {
-            let frame = self.frames.last().unwrap();
-            let chunk = &frame.get_closure().borrow().chunk;
+        let frame = self.frames.last().unwrap();
+        let chunk = &frame.get_closure().borrow().chunk;
 
+        let value = {
             if let Some(value) = chunk.get_constant(closure_id) {
-                value.clone()
+                value.as_ref()
             } else {
                 println!("gen_closure: unknown constant");
                 return Err(VMError::RuntimeError);
             }
         };
 
-        // println!(">>> GEN_CLOSURE {}", value);
+        // println!(">>> GEN_CLOSURE {:02x}", closure_id);
 
-        if let Value::Closure(closure) = value.as_ref() {
+        if let Value::Closure(closure) = value {
             let closure = &mut closure.borrow_mut();
 
-            for _ in 0..closure.upvalue_refs.len() {
-                let idx = if let Some(idx) = self.read_byte() {
-                    idx
-                } else {
-                    println!("gen_closure: missing upval index");
-                    return Err(VMError::RuntimeError);
-                };
+            if !closure.upvalues.is_empty() {
+                closure.upvalues.clear();
+            }
 
-                let is_local = if let Some(is_local) = self.read_byte() {
-                    is_local as u8 == 1
-                } else {
-                    println!("gen_closure: missing upval type");
-                    return Err(VMError::RuntimeError);
-                };
+            let frame = self.frames.last().unwrap();
+            let frame_closure = frame.get_closure().borrow();
 
-                let frame = self.frames.last().unwrap();
-                let frame_closure = frame.get_closure().borrow();
+            for i in 0..closure.upvalue_refs.len() {
+                let upvalue_ref = &closure.upvalue_refs[i];
 
-                if is_local {
-                    if self
-                        .open_upvalues
-                        .iter()
-                        .rfind(|u| {
-                            let u = u.borrow();
-                            u.kind == UpvalueKind::Open
-                                && u.slot.unwrap() == frame.offset + idx as usize
-                        })
-                        .is_none()
-                    {
-                        let value = if let Some(value) = self.stack.get(frame.offset + idx as usize)
-                        {
-                            value
-                        } else {
-                            println!("gen_closure: undefined variable");
-                            println!("idx: {} (offset: {})", idx as usize, frame.offset);
-
-                            return Err(VMError::RuntimeError);
-                        };
-
-                        let upvalue = Upvalue {
-                            kind: UpvalueKind::Open,
-                            slot: Some(frame.offset + idx as usize),
-                            value: value.clone(),
-                        };
-                        let upvalue = Rc::new(RefCell::new(upvalue));
-
-                        // println!(
-                        //     "    capture LOCAL {:03} (offset: {}) = {}",
-                        //     idx as u8, frame.offset, value
-                        // );
-
-                        closure.upvalues.push(upvalue.clone());
-                        self.open_upvalues.push(upvalue);
-                    }
-                } else {
+                if upvalue_ref.is_local {
                     // println!(
-                    //     "    ref UPVAL {} = {}",
-                    //     idx as u8,
-                    //     frame_closure
-                    //         .upvalues
-                    //         .get(idx as usize)
-                    //         .unwrap()
-                    //         .borrow()
-                    //         .value,
+                    //     "    new LOCAL {:03} (offset: {})",
+                    //     upvalue_ref.index as u8, frame.offset
                     // );
 
-                    let u = frame_closure.upvalues.get(idx as usize).unwrap();
+                    let index = frame.offset + upvalue_ref.index as usize;
+
+                    let value = self.stack[index].clone();
+
+                    let upvalue = Rc::new(Upvalue {
+                        slot: index,
+                        value: Some(value),
+                    });
+                    closure.upvalues.push(upvalue);
+                } else {
+                    // println!(
+                    //     "    ref UPVAL {:03} = {}",
+                    //     upvalue_ref.index as u8,
+                    //     frame_closure
+                    //         .upvalues
+                    //         .get(upvalue_ref.index as usize)
+                    //         .unwrap()
+                    //         .borrow()
+                    //         .value
+                    //         .clone()
+                    //         .unwrap(),
+                    // );
+
+                    let u = frame_closure
+                        .upvalues
+                        .get(upvalue_ref.index as usize)
+                        .unwrap();
                     closure.upvalues.push(u.clone());
                 }
             }
 
+            // println!("upvalues: {:#?}", closure.upvalues);
+
             self.stack.truncate(self.stack.len() - 1);
-            self.stack.push(value.clone());
+
+            let closure = chunk.get_constant(closure_id).unwrap().clone();
+            self.stack.push(closure);
 
             return Ok(());
         } else {

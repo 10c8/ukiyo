@@ -123,7 +123,7 @@ fn main() {
     let start = Instant::now();
 
     let mut vm = VM::new();
-    // vm.load_stdlib();
+    vm.load_stdlib();
 
     if let Err(err) = vm.interpret(chunk) {
         panic!("{:?}", err);

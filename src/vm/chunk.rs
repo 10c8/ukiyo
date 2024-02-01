@@ -161,8 +161,8 @@ impl Display for Chunk {
                     }
                 }
                 Opcode::GenClosure => {
-                    let idx = if let Some((idx, _)) = code.next() {
-                        idx as usize
+                    let idx = if let Some((_, idx)) = code.next() {
+                        *idx as usize
                     } else {
                         panic!("missing closure id");
                     };
@@ -176,13 +176,9 @@ impl Display for Chunk {
                     if let Value::Closure(closure) = value.as_ref() {
                         let closure = closure.borrow();
 
-                        data = format!(".. .. .. {:02x}", op).into();
+                        data = format!(".. .. {:02x} {:02x}", op, idx).into();
 
-                        let mut line = String::from(format!(
-                            "GEN_CLOSURE {} * {:03x}",
-                            value,
-                            closure.upvalues.len()
-                        ));
+                        let mut line = String::from(format!("GEN_CLOSURE {:02x} = {}", idx, value));
 
                         for upvalue in &closure.upvalue_refs {
                             line.push_str(&format!(
