@@ -14,6 +14,7 @@ panic = "abort"
 [dependencies]
 codespan-reporting = ">=0.11.1"
 ecow = ">=0.2.0"
+line-numbers = "0.3.0"
 memory-stats = ">=1.1.0"
 rand = ">=0.8.5"
 regex = ">=1.10.2"

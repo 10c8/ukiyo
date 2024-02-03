@@ -1,10 +1,14 @@
 use std::{cell::RefCell, rc::Rc};
 
 use ecow::{EcoString, EcoVec};
+use line_numbers::LinePositions;
 
-use crate::parser::{AstNode, CasePatternKind};
+use crate::{
+    lexer::{CodeRange, RangeMode},
+    parser::{AstNode, CasePatternKind},
+};
 
-use super::{chunk::Chunk, Opcode, Upvalue, Value};
+use super::{block::Block, Opcode, Upvalue, Value, DEBUG};
 
 #[derive(Debug, Clone)]
 pub struct Local {
@@ -28,7 +32,7 @@ pub enum CompileError {
 pub struct Closure {
     pub name: EcoString,
     pub arity: usize,
-    pub chunk: Chunk,
+    pub chunk: Block,
     pub upvalues: Vec<Rc<Upvalue>>,
     pub upvalue_refs: Vec<UpvalueRef>,
 }
@@ -45,7 +49,11 @@ pub struct CompilerState {
     locals: Vec<Local>,
     scope_depth: usize,
     upvalue_refs: Vec<UpvalueRef>,
+
     lambda_id: usize,
+
+    current_name: EcoString,
+    current_id: usize,
 }
 
 impl CompilerState {
@@ -54,45 +62,58 @@ impl CompilerState {
             locals: Vec::new(),
             scope_depth: 0,
             upvalue_refs: Vec::new(),
+
             lambda_id: 0,
+
+            current_name: EcoString::new(),
+            current_id: 0,
         }
     }
 }
 
 pub struct Compiler {
     states: Vec<CompilerState>,
+    // TODO: Would this benefit from being an Rc?
+    constants: Vec<Rc<Value>>,
+
+    line_positions: LinePositions,
+    original_range: Option<CodeRange>,
 }
 
 impl Compiler {
-    pub fn new() -> Self {
+    pub fn new(line_positions: LinePositions) -> Self {
         Self {
             states: vec![CompilerState::new()],
+            constants: Vec::new(),
+
+            line_positions,
+            original_range: None,
         }
     }
 
-    pub fn compile(&mut self, node: &AstNode, chunk: &mut Chunk) -> CResult {
+    pub fn compile(&mut self, node: &AstNode, block: &mut Block) -> CResult {
         match node {
-            AstNode::Prog { body, .. } => {
+            AstNode::Prog { body, range } => {
                 for (i, node) in body.iter().enumerate() {
-                    self.compile(node, chunk)?;
+                    self.compile(node, block)?;
 
                     if i < body.len() - 1 {
                         match node {
-                            AstNode::ExprStmt { .. } => {
+                            AstNode::ExprStmt { range, .. } => {
                                 // Discard the result of every expression statement except
                                 // the last one, which is the return value of the program.
                                 // This is done so the stack doesn't get cluttered with unused
                                 // values.
-                                chunk.write(Opcode::Pop.into(), 1);
+                                self.emit(block, Opcode::Pop.into(), range);
                             }
                             _ => {}
                         }
                     }
                 }
 
-                chunk.write(Opcode::Return.into(), 1);
+                self.emit(block, Opcode::Return.into(), range);
 
-                self.optimize(chunk);
+                self.optimize(block);
 
                 Ok(())
             }
@@ -100,7 +121,23 @@ impl Compiler {
                 self.states.last_mut().unwrap().scope_depth += 1;
 
                 for node in body.iter() {
-                    self.compile(node, chunk)?;
+                    match node {
+                        AstNode::ExprStmt { expr, .. } => match expr.as_ref() {
+                            AstNode::BoolLit { .. }
+                            | AstNode::StrLit { .. }
+                            | AstNode::NumLit { .. } => {
+                                if node != body.last().unwrap() {
+                                    // If this is not the last expression in a block, its value is discarded
+                                    println!("warning: unused value");
+                                    continue;
+                                }
+                            }
+                            _ => {}
+                        },
+                        _ => {}
+                    }
+
+                    self.compile(node, block)?;
                 }
 
                 let state = &mut self.states.last_mut().unwrap();
@@ -108,13 +145,13 @@ impl Compiler {
 
                 Ok(())
             }
-            AstNode::ExprStmt { expr, .. } => self.compile(expr, chunk),
+            AstNode::ExprStmt { expr, .. } => self.compile(expr, block),
             AstNode::FuncDecl {
                 id,
                 is_const,
                 params,
                 body,
-                ..
+                range,
             } => {
                 let name = match id.as_ref() {
                     AstNode::Ident { name, .. } => name.clone(),
@@ -124,8 +161,8 @@ impl Compiler {
                 if *is_const {
                     // Constant functions run once at the time of declaration, so that
                     // later calls will always point to the same value
-                    self.compile(body, chunk)?;
-                    self.emit_store(name, chunk);
+                    self.compile(body, block)?;
+                    self.emit_store(name, block, range);
                 } else {
                     match body.as_ref() {
                         AstNode::Block { body, .. } => {
@@ -153,16 +190,20 @@ impl Compiler {
                         _ => unreachable!(),
                     }
 
-                    self.emit_closure(Some(&name), params, body, chunk)?;
+                    self.emit_closure(Some(&name), params, body, block, range)?;
                 }
 
                 Ok(())
             }
-            AstNode::Lambda { params, body, .. } => self.emit_closure(None, params, body, chunk),
-            AstNode::FuncRef { id, .. } => {
+            AstNode::Lambda {
+                params,
+                body,
+                range,
+            } => self.emit_closure(None, params, body, block, range),
+            AstNode::FuncRef { id, range } => {
                 match id.as_ref() {
                     AstNode::Ident { name, .. } => {
-                        self.emit_load(name, chunk);
+                        self.emit_load(name, block, range);
                     }
                     _ => unreachable!(),
                 }
@@ -174,145 +215,140 @@ impl Compiler {
                 then,
                 elifs,
                 else_,
-                ..
+                range,
             } => {
-                self.compile(cond, chunk)?;
+                self.compile(cond, block)?;
 
                 // Jump to the next condition if the first one doesn't match
-                chunk.write(Opcode::JumpIfFalse.into(), 1);
-                chunk.write(0xff, 1);
-                chunk.write(0xff, 1);
-                chunk.write(0xff, 1);
+                self.emit(block, Opcode::JumpIfFalse.into(), range);
+                self.emit(block, 0xff, range);
+                self.emit(block, 0xff, range);
+                self.emit(block, 0xff, range);
 
-                let then_jmp = chunk.code.len() - 3;
+                let then_jmp = block.size() - 3;
 
-                self.compile(then, chunk)?;
+                self.compile(then, block)?;
 
                 // Jump to the end of the if block once the then block has been executed
-                chunk.write(Opcode::Jump.into(), 1);
-                chunk.write(0xff, 1);
-                chunk.write(0xff, 1);
-                chunk.write(0xff, 1);
+                self.emit(block, Opcode::Jump.into(), range);
+                self.emit(block, 0xff, range);
+                self.emit(block, 0xff, range);
+                self.emit(block, 0xff, range);
 
                 let mut end_jumps = Vec::new();
 
-                let end_jmp = chunk.code.len() - 3;
+                let end_jmp = block.size() - 3;
                 end_jumps.push(end_jmp);
 
                 for (cond, body) in elifs.iter() {
-                    self.patch_jump(then_jmp, chunk);
+                    self.patch_jump(then_jmp, block);
 
-                    self.compile(cond, chunk)?;
+                    self.compile(cond, block)?;
 
                     // Jump to the next condition if the previous one doesn't match
-                    chunk.write(Opcode::JumpIfFalse.into(), 1);
-                    chunk.write(0xff, 1);
-                    chunk.write(0xff, 1);
-                    chunk.write(0xff, 1);
+                    self.emit(block, Opcode::JumpIfFalse.into(), range);
+                    self.emit(block, 0xff, range);
+                    self.emit(block, 0xff, range);
+                    self.emit(block, 0xff, range);
 
-                    let no_match_jmp = chunk.code.len() - 3;
+                    let no_match_jmp = block.size() - 3;
 
-                    self.compile(body, chunk)?;
+                    self.compile(body, block)?;
 
                     // Jump to the end of the if block once the body has been executed
-                    chunk.write(Opcode::Jump.into(), 1);
-                    chunk.write(0xff, 1);
-                    chunk.write(0xff, 1);
-                    chunk.write(0xff, 1);
+                    self.emit(block, Opcode::Jump.into(), range);
+                    self.emit(block, 0xff, range);
+                    self.emit(block, 0xff, range);
+                    self.emit(block, 0xff, range);
 
-                    let end_jmp = chunk.code.len() - 3;
+                    let end_jmp = block.size() - 3;
                     end_jumps.push(end_jmp);
 
-                    self.patch_jump(no_match_jmp, chunk);
+                    self.patch_jump(no_match_jmp, block);
                 }
 
                 if elifs.is_empty() {
-                    self.patch_jump(then_jmp, chunk);
+                    self.patch_jump(then_jmp, block);
                 }
 
-                self.compile(else_, chunk)?;
+                self.compile(else_, block)?;
 
                 for end_jmp in end_jumps.iter() {
-                    self.patch_jump(*end_jmp, chunk);
+                    self.patch_jump(*end_jmp, block);
                 }
 
                 Ok(())
             }
-            AstNode::CaseExpr { expr, cases, .. } => {
+            AstNode::CaseExpr { expr, cases, range } => {
                 let mut end_jmps = Vec::new();
 
-                for (i, case) in cases.iter().enumerate() {
+                for case in cases.iter() {
                     if let AstNode::CaseBranch { pattern, body, .. } = case {
-                        if i > 0 {
-                            // Pop the result of the previous test
-                            chunk.write(Opcode::Pop.into(), 1);
-                        }
-
-                        self.compile(expr, chunk)?;
+                        self.compile(expr, block)?;
 
                         if let AstNode::CasePattern { kind, expr, .. } = pattern.as_ref() {
                             match kind {
                                 CasePatternKind::Wildcard => {
                                     // Wildcard pattern always matches
-                                    chunk.write(Opcode::LoadTrue.into(), 1);
+                                    self.emit(block, Opcode::LoadTrue.into(), range);
                                 }
                                 CasePatternKind::Ident => {
                                     // Same as any, but also binds the value to a local
                                     if let AstNode::Ident { name, .. } = expr.as_ref() {
-                                        self.emit_store(name.clone(), chunk);
+                                        self.emit_store(name.clone(), block, range);
 
-                                        chunk.write(Opcode::LoadTrue.into(), 1);
+                                        self.emit(block, Opcode::LoadTrue.into(), range);
                                     }
                                 }
                                 CasePatternKind::Literal => {
-                                    self.compile(expr, chunk)?;
-                                    chunk.write(Opcode::Equals.into(), 1);
+                                    self.compile(expr, block)?;
+                                    self.emit(block, Opcode::Equals.into(), range);
                                 }
                             }
                         }
 
                         // Jump to the next case if the pattern doesn't match
-                        chunk.write(Opcode::JumpIfFalse.into(), 1);
-                        chunk.write(0xff, 1);
-                        chunk.write(0xff, 1);
-                        chunk.write(0xff, 1);
+                        self.emit(block, Opcode::JumpIfFalse.into(), range);
+                        self.emit(block, 0xff, range);
+                        self.emit(block, 0xff, range);
+                        self.emit(block, 0xff, range);
 
-                        let no_match_jmp = chunk.code.len() - 3;
+                        let no_match_jmp = block.size() - 3;
 
-                        // If the pattern matches, pop the result of the test and execute the body
-                        chunk.write(Opcode::Pop.into(), 1);
-
+                        // If the pattern matches, execute the body
                         self.states.last_mut().unwrap().scope_depth += 1;
-
-                        self.compile(body, chunk)?;
-
+                        self.compile(body, block)?;
                         self.states.last_mut().unwrap().scope_depth -= 1;
 
                         // Leave the case block once the body has been executed
-                        chunk.write(Opcode::Jump.into(), 1);
-                        chunk.write(0xff, 1);
-                        chunk.write(0xff, 1);
-                        chunk.write(0xff, 1);
+                        self.emit(block, Opcode::Jump.into(), range);
+                        self.emit(block, 0xff, range);
+                        self.emit(block, 0xff, range);
+                        self.emit(block, 0xff, range);
 
-                        let end_jmp = chunk.code.len() - 3;
+                        let end_jmp = block.size() - 3;
                         end_jmps.push(end_jmp);
 
-                        self.patch_jump(no_match_jmp, chunk);
+                        self.patch_jump(no_match_jmp, block);
                     }
                 }
 
                 // If no case matches, returns false
-                chunk.write(Opcode::LoadFalse.into(), 1);
+                self.emit(block, Opcode::LoadFalse.into(), range);
 
                 for end_jmp in end_jmps.iter() {
-                    self.patch_jump(*end_jmp, chunk);
+                    self.patch_jump(*end_jmp, block);
                 }
 
                 Ok(())
             }
-            AstNode::FuncCall { callee, args, .. } => {
+            AstNode::FuncCall {
+                callee,
+                args,
+                range,
+            } => {
                 for arg in args.iter() {
-                    self.compile(arg, chunk)?;
+                    self.compile(arg, block)?;
                 }
 
                 match callee.as_ref() {
@@ -321,9 +357,9 @@ impl Compiler {
                             "eq" => Some(Opcode::Equals),
                             "ne" => Some(Opcode::NotEquals),
                             "lt" => Some(Opcode::LessThan),
-                            "le" => Some(Opcode::LessThanOrEqual),
+                            "lte" => Some(Opcode::LessThanOrEqual),
                             "gt" => Some(Opcode::GreaterThan),
-                            "ge" => Some(Opcode::GreaterThanOrEqual),
+                            "gte" => Some(Opcode::GreaterThanOrEqual),
                             "add" => Some(Opcode::Add),
                             "sub" => Some(Opcode::Subtract),
                             "mul" => Some(Opcode::Multiply),
@@ -331,64 +367,233 @@ impl Compiler {
                             _ => None,
                         };
                         if let Some(op) = op {
-                            chunk.write(op.into(), 1);
+                            self.emit(block, op.into(), range);
                             return Ok(());
                         }
 
-                        self.emit_load(name, chunk);
+                        if let Some(id) = self
+                            .states
+                            .iter()
+                            .rev()
+                            .rfind(|s| s.current_name == *name)
+                            .map(|s| s.current_id)
+                        {
+                            // Whenever a function is called from within itself, we need to point
+                            // the call to the correct closure, and since this might happen from
+                            // within nested scopes, we iterate through every state to see if we
+                            // get a match.
+                            // I know, I know... This might not be the most efficient way to do
+                            // this, but it works for now.
+                            self.emit(block, Opcode::LoadConstant.into(), &range);
+                            self.emit(block, id as u8, &range);
+                        } else {
+                            self.emit_load(name, block, range);
+                        }
                     }
                     AstNode::FuncCall { .. } | AstNode::Lambda { .. } | AstNode::FuncRef { .. } => {
-                        self.compile(callee, chunk)?;
+                        self.compile(callee, block)?;
                     }
                     _ => unreachable!(),
                 }
 
-                chunk.write(Opcode::Call.into(), 1);
-                chunk.write(args.len() as u8, 1);
+                // println!("call line: {:?}", {
+                //     let range = match self.original_range {
+                //         Some(range) => range,
+                //         None => *range,
+                //     };
+                //     self.line_positions.from_offset(range.0).as_usize() + 1
+                // });
+                self.emit(block, Opcode::Call.into(), range);
+                self.emit(block, args.len() as u8, range);
 
                 Ok(())
             }
-            AstNode::ConcatOp { left, right, .. } => {
-                self.compile(left, chunk)?;
-                self.compile(right, chunk)?;
+            AstNode::IndexingOp { expr, index, range } => {
+                self.compile(expr, block)?;
+                self.compile(index, block)?;
 
-                chunk.write(Opcode::Concatenate.into(), 1);
-
-                Ok(())
-            }
-            AstNode::Ident { name, .. } => {
-                self.emit_load(name, chunk);
+                self.emit(block, Opcode::Indexing.into(), range);
 
                 Ok(())
             }
-            AstNode::BoolLit { value, .. } => {
+            AstNode::ConcatOp { left, right, range } => {
+                self.compile(left, block)?;
+                self.compile(right, block)?;
+
+                self.emit(block, Opcode::Concatenate.into(), range);
+
+                Ok(())
+            }
+            AstNode::IterationOp {
+                id,
+                expr,
+                body,
+                range,
+            } => {
+                let id = match id.as_ref() {
+                    AstNode::Ident { name, .. } => name.clone(),
+                    _ => unreachable!(),
+                };
+
+                self.compile(expr, block)?;
+
+                self.emit(block, Opcode::LoadIterator.into(), range);
+
+                let loop_start = block.size() - 1;
+
+                self.emit(block, Opcode::LoopIterator.into(), range);
+                self.emit(block, 0xff, range);
+                self.emit(block, 0xff, range);
+                self.emit(block, 0xff, range);
+
+                let end_jmp = block.size() - 3;
+
+                let state = self.states.last_mut().unwrap();
+                state.scope_depth += 1;
+
+                let iter_local = Local {
+                    name: EcoString::from("<iterator>"),
+                    is_capture: false,
+                };
+                state.locals.push(iter_local);
+
+                let id_local = Local {
+                    name: id,
+                    is_capture: false,
+                };
+                state.locals.push(id_local);
+
+                self.compile(body, block)?;
+
+                self.states.last_mut().unwrap().scope_depth -= 1;
+
+                let loop_offset = block.size() - loop_start + 3;
+
+                self.emit(block, Opcode::IteratorAppend.into(), range);
+                self.emit(block, loop_offset as u8, range);
+                self.emit(block, (loop_offset >> 8) as u8, range);
+                self.emit(block, (loop_offset >> 16) as u8, range);
+
+                // Discard hanging locals, as well as the iterator
+                while self.states.last_mut().unwrap().locals.len() > 2 {
+                    self.emit(block, Opcode::Pop.into(), range);
+                    self.states.last_mut().unwrap().locals.pop();
+                }
+
+                self.patch_jump(end_jmp, block);
+
+                return Ok(());
+            }
+            AstNode::Ident { name, range } => {
+                self.emit_load(name, block, range);
+
+                Ok(())
+            }
+            AstNode::BoolLit { value, range } => {
                 match value {
-                    true => chunk.write(Opcode::LoadTrue.into(), 1),
-                    false => chunk.write(Opcode::LoadFalse.into(), 1),
+                    true => self.emit(block, Opcode::LoadTrue.into(), range),
+                    false => self.emit(block, Opcode::LoadFalse.into(), range),
                 }
 
                 Ok(())
             }
-            AstNode::StrLit { value, .. } => {
+            AstNode::StrLit { value, range } => {
                 let value = Rc::new(Value::String(value.clone()));
 
-                let id = chunk.add_constant(value);
-                chunk.write(Opcode::LoadConstant.into(), 1);
-                chunk.write(id as u8, 1);
+                let id = self.add_constant(value);
+                self.emit(block, Opcode::LoadConstant.into(), range);
+                self.emit(block, id as u8, range);
 
                 Ok(())
             }
-            AstNode::NumLit { value, .. } => {
+            AstNode::FmtString { parts, range } => {
+                for part in parts.iter().rev() {
+                    match part {
+                        AstNode::StrLit { value, .. } => {
+                            let value = Rc::new(Value::String(value.clone()));
+
+                            let id = self.add_constant(value);
+                            // println!("const line: {:?}", {
+                            //     let range = match self.original_range {
+                            //         Some(range) => range,
+                            //         None => *range,
+                            //     };
+                            //     self.line_positions.from_offset(range.0).as_usize() + 1
+                            // });
+                            self.emit(block, Opcode::LoadConstant.into(), range);
+                            self.emit(block, id as u8, range);
+                        }
+                        _ => {
+                            self.original_range = Some(range.clone());
+                            // println!("part line: {:?}", {
+                            //     let range = match self.original_range {
+                            //         Some(range) => range,
+                            //         None => *range,
+                            //     };
+                            //     self.line_positions.from_offset(range.0).as_usize() + 1
+                            // });
+                            self.compile(part, block)?;
+                            self.original_range = None;
+                        }
+                    }
+                }
+
+                self.emit(block, Opcode::BuildString.into(), range);
+                self.emit(block, parts.len() as u8, range);
+
+                Ok(())
+            }
+            AstNode::NumLit { value, range } => {
                 match *value as usize {
-                    0 => chunk.write(Opcode::LoadZero.into(), 1),
-                    1 => chunk.write(Opcode::LoadOne.into(), 1),
-                    2 => chunk.write(Opcode::LoadTwo.into(), 1),
+                    0 => self.emit(block, Opcode::LoadZero.into(), range),
+                    1 => self.emit(block, Opcode::LoadOne.into(), range),
+                    2 => self.emit(block, Opcode::LoadTwo.into(), range),
                     _ => {
                         let value = Rc::new(Value::Number(*value));
 
-                        let id = chunk.add_constant(value);
-                        chunk.write(Opcode::LoadConstant.into(), 1);
-                        chunk.write(id as u8, 1);
+                        let id = self.add_constant(value);
+                        self.emit(block, Opcode::LoadConstant.into(), range);
+                        self.emit(block, id as u8, range);
+                    }
+                }
+
+                Ok(())
+            }
+            AstNode::List { items, range } => {
+                for item in items.iter().rev() {
+                    self.compile(item, block)?;
+                }
+
+                let size = items.len();
+
+                self.emit(block, Opcode::LoadList.into(), range);
+                self.emit(block, size as u8, range);
+                self.emit(block, (size >> 8) as u8, range);
+
+                Ok(())
+            }
+            AstNode::Range {
+                mode,
+                start,
+                end,
+                step,
+                range,
+            } => {
+                self.compile(start, block)?;
+                self.compile(end, block)?;
+
+                if let Some(step) = step {
+                    self.compile(step, block)?;
+                } else {
+                    self.emit(block, Opcode::LoadOne.into(), range);
+                }
+
+                match mode {
+                    RangeMode::Inclusive => {
+                        self.emit(block, Opcode::LoadRangeInclusive.into(), range)
+                    }
+                    RangeMode::Exclusive => {
+                        self.emit(block, Opcode::LoadRangeExclusive.into(), range)
                     }
                 }
 
@@ -398,53 +603,43 @@ impl Compiler {
         }
     }
 
-    fn optimize(&self, chunk: &mut Chunk) {
-        for i in 0..chunk.code.len() {
-            let op = chunk.code[i];
-            if op >= Opcode::LAST as u8 {
-                continue;
-            }
-
-            let op = Opcode::from(op);
-            match op {
-                Opcode::Jump => {
-                    let offset = (chunk.code[i + 1] as usize)
-                        | ((chunk.code[i + 2] as usize) << 8)
-                        | ((chunk.code[i + 3] as usize) << 16);
-
-                    let op_at_offset = chunk.code[i + offset + 4];
-                    match Opcode::from(op_at_offset) {
-                        Opcode::Return => {
-                            // A jump to a return statement can be replaced with a return
-                            chunk.code[i] = Opcode::Return as u8;
-                            chunk.code[i + 1] = Opcode::Nop.into();
-                            chunk.code[i + 2] = Opcode::Nop.into();
-                            chunk.code[i + 3] = Opcode::Nop.into();
-
-                            println!("optimized jump to return");
-                        }
-                        _ => {}
-                    }
-                }
-                _ => {}
-            }
-        }
+    pub fn constants(&self) -> &Vec<Rc<Value>> {
+        &self.constants
     }
 
-    fn emit_load(&mut self, name: &EcoString, chunk: &mut Chunk) {
-        // Try to find the variable in the local scope
+    fn emit(&mut self, block: &mut Block, op: u8, range: &CodeRange) {
+        let range = match self.original_range {
+            Some(range) => range,
+            None => *range,
+        };
+        let line = self.line_positions.from_offset(range.0).as_usize() + 1;
+
+        block.insert(op, line);
+    }
+
+    fn emit_load(&mut self, name: &EcoString, block: &mut Block, range: &CodeRange) {
+        let range = match self.original_range {
+            Some(range) => range,
+            None => *range,
+        };
+
         let state = self.states.last().unwrap();
+
+        // Try to find the variable in the local scope
         if let Some(idx) = state.locals.iter().rposition(|l| l.name == *name) {
-            chunk.write(Opcode::LoadLocal.into(), 1);
-            chunk.write(idx as u8, 1);
+            let captures_self = state.locals.iter().any(|l| l.name == state.current_name);
+            let idx = if captures_self { idx - 1 } else { idx };
+
+            self.emit(block, Opcode::LoadLocal.into(), &range);
+            self.emit(block, idx as u8, &range);
 
             return;
         }
 
         // Try to find an upvalue
-        if let Some(idx) = self.resolve_upvalue(name, chunk, self.states.len() - 1) {
-            chunk.write(Opcode::LoadUpvalue.into(), 1);
-            chunk.write(idx as u8, 1);
+        if let Some(idx) = self.resolve_upvalue(name, block, self.states.len() - 1) {
+            self.emit(block, Opcode::LoadUpvalue.into(), &range);
+            self.emit(block, idx as u8, &range);
 
             return;
         }
@@ -452,14 +647,19 @@ impl Compiler {
         // Otherwise, assume it's a global
         let name = Rc::new(Value::String(name.clone()));
 
-        let name_id = chunk.add_constant(name);
-        chunk.write(Opcode::LoadConstant.into(), 1);
-        chunk.write(name_id as u8, 1);
+        let name_id = self.add_constant(name);
+        self.emit(block, Opcode::LoadConstant.into(), &range);
+        self.emit(block, name_id as u8, &range);
 
-        chunk.write(Opcode::LoadGlobal.into(), 1);
+        self.emit(block, Opcode::LoadGlobal.into(), &range);
     }
 
-    fn emit_store(&mut self, name: EcoString, chunk: &mut Chunk) {
+    fn emit_store(&mut self, name: EcoString, block: &mut Block, range: &CodeRange) {
+        let range = match self.original_range {
+            Some(range) => range,
+            None => *range,
+        };
+
         let state = &mut self.states.last_mut().unwrap();
         if state.scope_depth > 0 {
             if state.locals.iter().rposition(|l| l.name == name).is_some() {
@@ -472,19 +672,12 @@ impl Compiler {
             };
             state.locals.push(local);
         } else {
-            let name_id = chunk.add_constant(Value::String(name).into());
-            chunk.write(Opcode::LoadConstant.into(), 1);
-            chunk.write(name_id as u8, 1);
+            let name_id = self.add_constant(Value::String(name).into());
+            self.emit(block, Opcode::LoadConstant.into(), &range);
+            self.emit(block, name_id as u8, &range);
 
-            chunk.write(Opcode::StoreGlobal.into(), 1);
+            self.emit(block, Opcode::StoreGlobal.into(), &range);
         }
-    }
-
-    fn patch_jump(&mut self, from: usize, chunk: &mut Chunk) {
-        let offset = chunk.code.len() - from - 3;
-        chunk.code[from] = offset as u8;
-        chunk.code[from + 1] = (offset >> 8) as u8;
-        chunk.code[from + 2] = (offset >> 16) as u8;
     }
 
     fn emit_closure(
@@ -492,35 +685,15 @@ impl Compiler {
         name: Option<&EcoString>,
         params: &EcoVec<AstNode>,
         body: &AstNode,
-        chunk: &mut Chunk,
+        block: &mut Block,
+        range: &CodeRange,
     ) -> CResult {
+        let range = match self.original_range {
+            Some(range) => range,
+            None => *range,
+        };
+
         self.states.push(CompilerState::new());
-
-        let mut closure_chunk = Chunk::new();
-
-        let closure_depth = self.states.iter().nth_back(1).unwrap().scope_depth + 1;
-        self.states.last_mut().unwrap().scope_depth = closure_depth;
-
-        for param in params.iter() {
-            let name = match param {
-                AstNode::Ident { name, .. } => name.clone(),
-                _ => unreachable!(),
-            };
-
-            let closure_state = &mut self.states.last_mut().unwrap();
-
-            let local = Local {
-                name,
-                is_capture: false,
-            };
-            closure_state.locals.push(local);
-        }
-
-        self.compile(body, &mut closure_chunk)?;
-
-        closure_chunk.write(Opcode::Return.into(), 1);
-
-        self.optimize(&mut closure_chunk);
 
         let name = if let Some(name) = name {
             name.clone()
@@ -533,13 +706,53 @@ impl Compiler {
             EcoString::from(format!("<λ {:08x}>", last_state.lambda_id - 1))
         };
 
-        println!("[{}]\n{}", name, closure_chunk);
+        let self_id = EcoString::from(format!("<tmp {}>", name.clone()));
+        let self_id = self.add_constant(Rc::new(Value::String(self_id))); // Placeholder
+
+        // This is necessary for self-references
+        self.states.last_mut().unwrap().current_name = name.clone();
+        self.states.last_mut().unwrap().current_id = self_id;
+
+        let mut closure_block = Block::new();
+
+        let closure_depth = self.states.iter().nth_back(1).unwrap().scope_depth + 1;
+        self.states.last_mut().unwrap().scope_depth = closure_depth;
+
+        let closure_state = &mut self.states.last_mut().unwrap();
+        for param in params.iter() {
+            let name = match param {
+                AstNode::Ident { name, .. } => name.clone(),
+                _ => unreachable!(),
+            };
+
+            let local = Local {
+                name,
+                is_capture: false,
+            };
+            closure_state.locals.push(local);
+        }
+
+        self.compile(body, &mut closure_block)?;
+
+        self.emit(&mut closure_block, Opcode::Return.into(), &range);
+
+        self.optimize(&mut closure_block);
+
+        if DEBUG {
+            println!("[{}]\n{}", name, closure_block);
+
+            // println!(
+            //     "locals for \"{}\": {:#?}",
+            //     name,
+            //     self.states.last_mut().unwrap().locals
+            // );
+        }
 
         let upvalue_refs = &self.states.last().unwrap().upvalue_refs.clone();
         let closure = Closure {
             name: name.clone(),
             arity: params.len(),
-            chunk: closure_chunk,
+            chunk: closure_block,
             upvalues: Vec::new(),
             upvalue_refs: upvalue_refs.clone(),
         };
@@ -548,25 +761,46 @@ impl Compiler {
         self.states.pop();
 
         // Store the resulting closure in the scope
-        let closure_id = chunk.add_constant(closure);
-        chunk.write(Opcode::LoadConstant.into(), 1);
-        chunk.write(closure_id as u8, 1);
+        self.set_constant(self_id, closure);
+        self.emit(block, Opcode::LoadConstant.into(), &range);
+        self.emit(block, self_id as u8, &range);
 
-        self.emit_store(name, chunk);
+        self.emit_store(name, block, &range);
 
         // If the function captures any upvalues, we need to turn it into a closure
         if !upvalue_refs.is_empty() {
-            chunk.write(Opcode::LoadClosure.into(), 1);
-            chunk.write(closure_id as u8, 1);
+            self.emit(block, Opcode::LoadClosure.into(), &range);
+            self.emit(block, self_id as u8, &range);
         }
 
         Ok(())
     }
 
+    fn add_constant(&mut self, value: Rc<Value>) -> usize {
+        if let Some(idx) = self.constants.iter().rposition(|v| v == &value) {
+            return idx;
+        }
+
+        self.constants.push(value);
+
+        self.constants.len() - 1
+    }
+
+    fn set_constant(&mut self, idx: usize, value: Rc<Value>) {
+        self.constants[idx] = value;
+    }
+
+    fn patch_jump(&mut self, from: usize, block: &mut Block) {
+        let offset = block.size() - from - 3;
+        block.set(from, offset as u8);
+        block.set(from + 1, (offset >> 8) as u8);
+        block.set(from + 2, (offset >> 16) as u8);
+    }
+
     fn resolve_upvalue(
         &mut self,
         name: &EcoString,
-        chunk: &mut Chunk,
+        block: &mut Block,
         state_index: usize,
     ) -> Option<usize> {
         if state_index == 0 {
@@ -581,15 +815,20 @@ impl Compiler {
             .enumerate()
             .rfind(|(_, l)| l.name == *name)
         {
-            println!("upvalue (local): {}", name);
+            if DEBUG {
+                println!("upvalue (local): {}", name);
+            }
+
             local.is_capture = true;
 
             let idx = self.add_upvalue(idx as u8, true, state_index);
             return Some(idx);
         }
 
-        if let Some(idx) = self.resolve_upvalue(name, chunk, state_index - 1) {
-            println!("upvalue (upvalue): {}", name);
+        if let Some(idx) = self.resolve_upvalue(name, block, state_index - 1) {
+            if DEBUG {
+                println!("upvalue (upvalue): {}", name);
+            }
 
             let idx = self.add_upvalue(idx as u8, false, state_index);
             return Some(idx);
@@ -612,8 +851,42 @@ impl Compiler {
 
         state.upvalue_refs.push(UpvalueRef { index, is_local });
 
-        println!("upvalues: {:?}", state.upvalue_refs);
-
         state.upvalue_refs.len() - 1
+    }
+
+    fn optimize(&self, block: &mut Block) {
+        if DEBUG {
+            // Skip optimization in debug mode
+            return;
+        }
+
+        for i in 0..block.size() {
+            let op = block.code()[i];
+            if op >= Opcode::LAST as u8 {
+                continue;
+            }
+
+            let op = Opcode::from(op);
+            match op {
+                Opcode::Jump => {
+                    let offset = (block.code()[i + 1] as usize)
+                        | ((block.code()[i + 2] as usize) << 8)
+                        | ((block.code()[i + 3] as usize) << 16);
+
+                    let op_at_offset = block.code()[i + offset + 4];
+                    match Opcode::from(op_at_offset) {
+                        Opcode::Return => {
+                            // A jump to a return statement can be replaced with a return
+                            block.set(i, Opcode::Return.into());
+                            block.set(i + 1, Opcode::Nop.into());
+                            block.set(i + 2, Opcode::Nop.into());
+                            block.set(i + 3, Opcode::Nop.into());
+                        }
+                        _ => {}
+                    }
+                }
+                _ => {}
+            }
+        }
     }
 }

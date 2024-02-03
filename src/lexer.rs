@@ -3,11 +3,13 @@ use ecow::EcoString;
 
 use crate::scanner::*;
 
+pub type CodeRange = (usize, usize);
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Span {
     pub line: usize,
     pub column: usize,
-    pub range: (usize, usize),
+    pub range: CodeRange,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -588,7 +590,7 @@ impl Lexer {
                         let span = Span {
                             line,
                             column,
-                            range: (span_start + 2, self.scanner.cursor()),
+                            range: (span_start, self.scanner.cursor()),
                         };
 
                         tokens.push(Token::String {

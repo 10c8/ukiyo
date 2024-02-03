@@ -1,301 +1,50 @@
-# Y f -> (!x -> x &x) (!y -> f (!a -> (y &y) a))
-
-# fac f -> !n -> case (lt n 2) of
-#   true  => 1
-#   false => mul n (f (sub n 1))
-
-# fib f -> !n -> case n of
-#   0 => 0
-#   1 => 1
-#   _ => add (f (sub n 1)) (f (sub n 2))
-
-# join [
-#   (0 ..< 10 |i| (Y &fac) i),
-#   (0 ..< 10 |i| (Y &fib) i)
-# ] "\n"
-
-
-# beer n -> case n of
-#   0 => "better go to the store and buy some more."
-#   1 => ~"
-#   1 bottle of beer on the wall
-#   1 bottle of beer
-#   Take one down, pass it around
-#   "~
-#   _ => $~"
-#   {{n}} bottles of beer on the wall
-#   {{n}} bottles of beer
-#   Take one down, pass it around
-#   {{head (lines (beer (sub n 1)))}}
-
-#   "~
-
-# join (map 5..=0 &beer) "\n"
-
-
-# merge a b ->
-#   case (len a) of
-#     0 => b
-#     _ => case (len b) of
-#       0 => a
-#       _ => case (lt (head a) (head b)) of
-#         true  => [(head a)] ++ (merge (tail a) b)
-#         false => [(head b)] ++ (merge a (tail b))
-
-# mergesort ns ->
-#   case (lt (len ns) 2) of
-#     true  => ns
-#     false =>
-#       const h -> div (len ns) 2
-#       merge (mergesort (take ns h)) (mergesort (drop ns h))
-
-# shuffle ns -> case (lte (len ns) 1) of
-#   true  => ns
-#   false =>
-#     const i -> rand 0 (sub (len ns) 1)
-#     const x -> head (drop ns i)
-#     const xs -> (take ns i) ++ (drop ns (add i 1))
-#     [x] ++ (shuffle xs)
-
-# const shuffled -> shuffle 1..=100
-# const sorted -> mergesort shuffled
-
-# $~"
-
-# before: {{shuffled}} ({{len shuffled}})
-# after:  {{sorted}} ({{len sorted}})
-
-# "~
-
-
-# sum a b -> add a b
-
-# const add5 -> sum 5
-
-# add5 10
-
-
-# const fruits -> {
-#   apple: { color: "red" },
-#   cherry: { color: "red" },
-#   banana: { color: "yellow" },
-#   avocado: { color: "green" },
-#   orange: { color: "orange" },
-#   tomato: { color: "red" },
-#   lemon: { color: "yellow" },
-#   lime: { color: "green" },
-#   grape: { color: "purple" },
-#   peach: { color: "orange" },
-#   pear: { color: "green" },
-#   kiwi: { color: "green" },
-#   blueberry: { color: "blue" },
-#   blackberry: { color: "black" },
-#   raspberry: { color: "red" },
-#   strawberry: { color: "red" },
-#   watermelon: { color: "green" },
-#   grapefruit: { color: "orange" },
-#   tangerine: { color: "orange" },
-#   papaya: { color: "orange" },
-#   mango: { color: "orange" },
-#   pineapple: { color: "yellow" },
-#   coconut: { color: "brown" },
-#   passionfruit: { color: "purple" },
-#   guava: { color: "green" },
-#   cranberry: { color: "red" },
-#   acai: { color: "purple" },
-# }
-
-# const red -> map (filter fruits (!_ v -> eq (v @ "color") "red")) (!k _ -> k)
-
-# $~"
-# Red fruits: {{join (init red) ", "}} and {{last red}}.
-# "~
-
-
-# greet name ->
-#   const pi -> 3.14159
-
-#   a ->
-#     pi
-#     name
-
-#   a
-
-# greet "Hello, world!"
-
-
-# talk name surname ->
-#   const a -> name
-
-#   b n ->
-#     a
-#     outer_pi
-
-#   b "Pizza"
-
-#   b surname
-
-# const outer_pi -> 3.14159
-
-# talk "John" "Doe"
-
-
-# Y f -> (!x -> x &x) (!y -> f (!a -> (y &y) a))
-
-# test f -> !n -> n
-
-# const a -> (Y &test) 10
-# const b -> (Y &test) 10
-
-# (Y &test) 10
-
-# (Y &test) 10
-
-
-# greet one ->
-#   inner two ->
-#     one
-
-#   &inner
-
-# (greet 1) 2
-
-
-# outer ->
-#   const foo -> "foo"
-#   const bar -> "bar"
-#   const pi -> 3.14159
-
-#   !zero -> pi
-
-# (outer) 0
-
-
-# outer ->
-#   const pi -> 3.14159
-
-#   middle ->
-#     foo -> "foo"
-
-#     inner ->
-#       test -> !bar -> bar
-
-#       inside ->
-#         baz -> "baz"
-
-#         (test) pi
-
-#     inner
-
-#   middle
-
-# (outer)
-
-
-# greet name -> case name of
-#   "John"   => "Howdy, Johnny!"
-#   "Jane"   => "Hi, Jane!"
-#   _        => $"Hey there, {{name}}!"
-
-# greet "Paul"
-
-
-# Y f -> (!x -> x &x) (!y -> f (!a -> (y &y) a))
-
-# fac f -> !n -> case (lt n 2) of
-#   true  => 1
-#   false => mul n (f (sub n 1))
-
-# fib f -> !n -> case n of
-#   0 => 0
-#   1 => 1
-#   _ => add (f (sub n 1)) (f (sub n 2))
-
-# (Y &fib) 35
-
-
-# loop n ->
-#   if (eq n 0) then
-#     0
+primes_to m ->
+  eratos lst ->
+    const p -> head lst
+    const ps -> tail lst
+    const pp -> mul p p
+
+    if (gt pp m) then
+      lst
+    else
+      [p] ++ (eratos (minus ps [pp..=m, p]))
+
+  eratos [2..=m]
+
+minus a b ->
+  if (eq (len a) 0) then
+    a
+  elif (eq (len b) 0) then
+    a
+  else
+    const x -> head a
+    const y -> head b
+
+    case (compare x y) of
+      "lt" => [x] ++ (minus (tail a) b)
+      "eq" => (minus (tail a) (tail b))
+      "gt" => (minus a (tail b))
+
+const to -> 500
+const primes -> primes_to to
+trace $"{{len primes}} primes to {{to}}: {{primes}}"
+
+# memoize f ->
+#   const memo -> newRecord {}
+#   !x -> if (has memo x) then
+#     readRecord memo x
 #   else
-#     print n
-#     loop (sub n 1)
+#     writeRecord memo x (f x)
 
-# loop 100000
+# fib_inner n -> if (lt n 2) then
+#   n
+# else
+#   (add (fib (sub n 1)) (fib (sub n 2)))
 
+# const fib -> memoize fib_inner
 
-# outer ->
-#   const a -> 1
-#   const b -> 2
+# trace (fib 35)
 
-#   trash ->
-#     add a b
-
-#   middle ->
-#     const c -> 3
-#     const d -> 4
-
-#     inner ->
-#       add a (add b (add c d))
-
-# ((outer))
-
-
-# vec2 x y ->
-#   get name ->
-#     case name of
-#       "x" => x
-#       "y" => y
-
-#   set name value ->
-#     case name of
-#       "x" => vec2 value y
-#       "y" => vec2 x value
-
-#   add_vec2 other ->
-#     const ox -> (other "get") "x"
-#     const oy -> (other "get") "y"
-
-#     vec2 (add x ox) (add y oy)
-
-#   !op -> case op of
-#     "get" => &get
-#     "set" => &set
-#     "add" => &add_vec2
-
-# const a -> vec2 22 10
-# const b -> vec2 33 20
-
-# const c -> (a "add") &b
-# (c "get") "x"
-
-
-# outer a b ->
-#   first -> add a b
-
-#   second -> sub a b
-
-#   !op -> case op of
-#     "a"      => a
-#     "b"      => b
-#     "first"  => first
-#     "second" => second
-#     "double" => outer (mul a 2) (mul b 2)
-
-# const test -> outer 10 20
-
-# const test2 -> test "double"
-# test2 "a"
-
-
-# fib n -> case (lt n 2) of
-#   true  => n
-#   false => add (fib (sub n 1)) (fib (sub n 2))
-
-
-fib n -> if (lt n 2) then
-  n
-else
-  add (fib (sub n 1)) (fib (sub n 2))
-
-fib 30
+{
+  apple: "red"
+}

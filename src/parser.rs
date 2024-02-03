@@ -5,8 +5,6 @@ use crate::lexer::*;
 
 static UNDERLINE: &str = "_";
 
-type Range = (usize, usize);
-
 #[derive(Debug, Clone, PartialEq)]
 pub enum CasePatternKind {
     Wildcard,
@@ -19,90 +17,95 @@ pub enum CasePatternKind {
 pub enum AstNode {
     Prog {
         body: EcoVec<AstNode>,
-        range: Range,
+        range: CodeRange,
     },
     ExprStmt {
         expr: Box<AstNode>,
-        range: Range,
+        range: CodeRange,
     },
     Block {
         body: EcoVec<AstNode>,
-        range: Range,
+        range: CodeRange,
     },
     FuncDecl {
         id: Box<AstNode>,
         is_const: bool,
         params: EcoVec<AstNode>,
         body: Box<AstNode>,
-        range: Range,
+        range: CodeRange,
     },
     Lambda {
         params: EcoVec<AstNode>,
         body: Box<AstNode>,
-        range: Range,
+        range: CodeRange,
     },
     FuncRef {
         id: Box<AstNode>,
-        range: Range,
+        range: CodeRange,
     },
     IfExpr {
         cond: Box<AstNode>,
         then: Box<AstNode>,
         elifs: EcoVec<(AstNode, AstNode)>,
         else_: Box<AstNode>,
-        range: Range,
+        range: CodeRange,
     },
     CaseExpr {
         expr: Box<AstNode>,
         cases: EcoVec<AstNode>,
-        range: Range,
+        range: CodeRange,
     },
     CaseBranch {
         pattern: Box<AstNode>,
         body: Box<AstNode>,
-        range: Range,
+        range: CodeRange,
     },
     CasePattern {
         kind: CasePatternKind,
         expr: Box<AstNode>,
-        range: Range,
+        range: CodeRange,
     },
     FuncCall {
         callee: Box<AstNode>,
         args: EcoVec<AstNode>,
-        range: Range,
+        range: CodeRange,
     },
     IndexingOp {
         expr: Box<AstNode>,
         index: Box<AstNode>,
-        range: Range,
+        range: CodeRange,
     },
     ConcatOp {
         left: Box<AstNode>,
         right: Box<AstNode>,
-        range: Range,
+        range: CodeRange,
     },
     IterationOp {
         id: Box<AstNode>,
         expr: Box<AstNode>,
         body: Box<AstNode>,
-        range: Range,
+        range: CodeRange,
     },
     Ident {
         name: EcoString,
-        range: Range,
+        range: CodeRange,
     },
     BoolLit {
         value: bool,
-        range: Range,
+        range: CodeRange,
     },
     StrLit {
         value: EcoString,
-        range: Range,
+        range: CodeRange,
+    },
+    FmtStringPre {
+        original: Token,
+        value: EcoString,
+        range: CodeRange,
     },
     FmtString {
-        value: EcoString,
-        range: Range,
+        parts: EcoVec<AstNode>,
+        range: CodeRange,
     },
     Regex {
         value: EcoString,
@@ -112,31 +115,32 @@ pub enum AstNode {
         is_dotall: bool,
         // is_unicode: bool,
         is_sticky: bool,
-        range: Range,
+        range: CodeRange,
     },
     NumLit {
         value: f64,
-        range: Range,
+        range: CodeRange,
     },
     List {
         items: EcoVec<AstNode>,
-        range: Range,
+        range: CodeRange,
     },
     Record {
         keys: EcoVec<AstNode>,
         values: EcoVec<AstNode>,
-        range: Range,
+        range: CodeRange,
     },
     Range {
         mode: RangeMode,
         start: Box<AstNode>,
         end: Box<AstNode>,
-        range: Range,
+        range: CodeRange,
+        step: Option<Box<AstNode>>,
     },
 }
 
 impl AstNode {
-    pub fn range(&self) -> Range {
+    pub fn range(&self) -> CodeRange {
         match self {
             AstNode::Prog { range, .. }
             | AstNode::ExprStmt { range, .. }
@@ -155,6 +159,7 @@ impl AstNode {
             | AstNode::Ident { range, .. }
             | AstNode::BoolLit { range, .. }
             | AstNode::StrLit { range, .. }
+            | AstNode::FmtStringPre { range, .. }
             | AstNode::FmtString { range, .. }
             | AstNode::Regex { range, .. }
             | AstNode::NumLit { range, .. }
@@ -621,7 +626,7 @@ impl Parser {
 
         // Evaluate possible format string
         let expr = match expr {
-            AstNode::FmtString { .. } => self.eval_fmt_string(expr)?,
+            AstNode::FmtStringPre { .. } => self.eval_fmt_string(expr)?,
             _ => expr,
         };
 
@@ -648,7 +653,7 @@ impl Parser {
             }
         }
 
-        self.parse_dedent()?;
+        cut!(self: parse_dedent)?;
 
         let range = (
             body.first().map(|stmt| stmt.range().0).unwrap_or(0),
@@ -849,7 +854,7 @@ impl Parser {
 
         // Evaluate possible format string
         let expr = match expr {
-            AstNode::FmtString { .. } => self.eval_fmt_string(expr)?,
+            AstNode::FmtStringPre { .. } => self.eval_fmt_string(expr)?,
             _ => expr,
         };
 
@@ -1057,7 +1062,7 @@ impl Parser {
 
         // Evaluate possible format string
         let arg = match arg {
-            AstNode::FmtString { .. } => self.eval_fmt_string(arg)?,
+            AstNode::FmtStringPre { .. } => self.eval_fmt_string(arg)?,
             _ => arg,
         };
 
@@ -1120,12 +1125,12 @@ impl Parser {
 
         // Evaluate possible format strings
         let expr = match expr {
-            AstNode::FmtString { .. } => self.eval_fmt_string(expr)?,
+            AstNode::FmtStringPre { .. } => self.eval_fmt_string(expr)?,
             _ => expr,
         };
 
         let index = match index {
-            AstNode::FmtString { .. } => self.eval_fmt_string(index)?,
+            AstNode::FmtStringPre { .. } => self.eval_fmt_string(index)?,
             _ => index,
         };
 
@@ -1160,12 +1165,12 @@ impl Parser {
 
         // Evaluate possible format strings
         let left = match left {
-            AstNode::FmtString { .. } => self.eval_fmt_string(left)?,
+            AstNode::FmtStringPre { .. } => self.eval_fmt_string(left)?,
             _ => left,
         };
 
         let right = match right {
-            AstNode::FmtString { .. } => self.eval_fmt_string(right)?,
+            AstNode::FmtStringPre { .. } => self.eval_fmt_string(right)?,
             _ => right,
         };
 
@@ -1196,13 +1201,8 @@ impl Parser {
 
         // Evaluate possible format strings
         let left = match left {
-            AstNode::FmtString { .. } => self.eval_fmt_string(left)?,
+            AstNode::FmtStringPre { .. } => self.eval_fmt_string(left)?,
             _ => left,
-        };
-
-        let right = match right {
-            AstNode::FmtString { .. } => self.eval_fmt_string(right)?,
-            _ => right,
         };
 
         let range = (left.range().0, right.range().1);
@@ -1246,7 +1246,7 @@ impl Parser {
     }
 
     fn parse_string(&mut self) -> PResult {
-        let (value, span) = self.parse_string_part()?;
+        let (_, value, span) = self.parse_string_part()?;
 
         Ok(AstNode::StrLit {
             value,
@@ -1257,9 +1257,10 @@ impl Parser {
     fn parse_fmt_string(&mut self) -> PResult {
         token!("`$`"; self: Token::Symbol { value: '$', .. })?;
 
-        let (value, span) = cut!(self: parse_string_part)?;
+        let (part_token, value, span) = cut!(self: parse_string_part)?;
 
-        Ok(AstNode::FmtString {
+        Ok(AstNode::FmtStringPre {
+            original: part_token,
             value,
             range: span.range,
         })
@@ -1271,8 +1272,13 @@ impl Parser {
         // larger expression, and it might fail. It would be a waste to evaluate the format
         // string only to throw it away.
 
-        if let AstNode::FmtString { value, range } = fmt_string {
-            let mut parts: Vec<(AstNode, Range)> = Vec::new();
+        if let AstNode::FmtStringPre {
+            original,
+            value,
+            range,
+        } = fmt_string
+        {
+            let mut parts: Vec<AstNode> = Vec::new();
 
             let mut part_start = 0;
             let mut part = EcoString::new();
@@ -1292,8 +1298,6 @@ impl Parser {
 
                                 is_capturing = false;
 
-                                part_start = i + 2;
-
                                 let mut lexer = Lexer::new(&capture.clone());
                                 if let Err(_err) = lexer.lex() {
                                     return Err(ParseError::Fail);
@@ -1306,16 +1310,44 @@ impl Parser {
                                 }
 
                                 if let AstNode::Prog { body, .. } = ast.unwrap() {
-                                    if body.is_empty() {
-                                        return Err(ParseError::Fail);
+                                    if body.len() != 1 {
+                                        // Single expression per format string part
+
+                                        // TODO: Gotta fix multiline strings!
+                                        // I want them to be fancy and auto-indent and stuff
+                                        // but I should also be able to properly display errors
+                                        // that occur in them.
+                                        // Every line in a multiline string trims indentation,
+                                        // so there's a discrepancy between the original source
+                                        // and captured source.
+                                        // I could just use the original source for error messages,
+                                        // but then I'd have to keep track of the original source
+                                        // for every part of the format string. Is that worth it?
+
+                                        let start = range.0 + 3 + capture_start;
+
+                                        return Err(ParseError::Cut(
+                                            Box::new(ParseError::Forbidden(
+                                                "Invalid format string substitution.",
+                                            )),
+                                            Token::String {
+                                                value: capture.clone(),
+                                                span: Span {
+                                                    line: original.span().line,
+                                                    column: original.span().column + part_start,
+                                                    range: (start, start),
+                                                },
+                                            },
+                                        ));
                                     }
 
-                                    let range = (range.0 + capture_start, range.0 + i - 1);
-                                    let node = body.first().unwrap().clone();
-                                    parts.push((node, range));
+                                    let body = body.last().unwrap().clone();
+                                    parts.push(body);
                                 }
 
                                 capture.clear();
+
+                                part_start = i + 2;
                             } else {
                                 capture.push(c);
                             }
@@ -1333,12 +1365,12 @@ impl Parser {
                                     value: part.clone(),
                                     range,
                                 };
-                                parts.push((node, range));
+                                parts.push(node);
 
                                 part.clear();
 
                                 is_capturing = true;
-                                capture_start = i + 2;
+                                capture_start = i + 1;
 
                                 chars.next();
                             } else {
@@ -1353,30 +1385,13 @@ impl Parser {
             }
 
             if !part.is_empty() {
-                let range = (part_start, range.1);
-                let node = AstNode::StrLit { value: part, range };
-                parts.push((node, range));
+                parts.push(AstNode::StrLit { value: part, range });
             }
 
-            let left = parts.remove(0).0;
-            let right = if parts.is_empty() {
-                return Err(ParseError::Fail);
-            } else {
-                parts.remove(0).0
-            };
-
-            let mut result = AstNode::ConcatOp {
-                left: Box::new(left),
-                right: Box::new(right),
+            let result = AstNode::FmtString {
+                parts: parts.into(),
                 range,
             };
-            for (part, range) in parts {
-                result = AstNode::ConcatOp {
-                    left: Box::new(result),
-                    right: Box::new(part),
-                    range,
-                };
-            }
 
             return Ok(result);
         }
@@ -1384,8 +1399,12 @@ impl Parser {
         unreachable!()
     }
 
-    fn parse_string_part(&mut self) -> Result<(EcoString, Span), ParseError> {
-        map!(self: Token::String { value, span }, "string" => (value, span))
+    fn parse_string_part(&mut self) -> Result<(Token, EcoString, Span), ParseError> {
+        let token = token!("string"; self: Token::String { .. })?;
+        match token {
+            Token::String { ref value, span } => Ok((token.clone(), value.clone(), span)),
+            _ => unreachable!(),
+        }
     }
 
     fn parse_regex(&mut self) -> PResult {
@@ -1480,7 +1499,7 @@ impl Parser {
 
         // Evaluate possible format strings
         for item in &mut items {
-            if let AstNode::FmtString { .. } = item {
+            if let AstNode::FmtStringPre { .. } = item {
                 *item = self.eval_fmt_string(item.clone())?;
             }
         }
@@ -1547,7 +1566,7 @@ impl Parser {
 
             // Evaluate possible format strings
             for value in &mut values {
-                if let AstNode::FmtString { .. } = value {
+                if let AstNode::FmtStringPre { .. } = value {
                     *value = self.eval_fmt_string(value.clone())?;
                 }
             }
@@ -1568,6 +1587,8 @@ impl Parser {
     }
 
     fn parse_range(&mut self) -> PResult {
+        token!("`[`"; self: Token::Symbol { value: '[', .. })?;
+
         let start = self.parse_range_part()?;
 
         let op = token!("range operator"; self: Token::RangeOperator { .. })?;
@@ -1578,14 +1599,24 @@ impl Parser {
 
         let end = cut!(self: parse_range_part)?;
 
+        let sep = opt!(self: Token::Symbol { value: ',', .. });
+        let step = if sep.is_some() {
+            Some(cut!(self: parse_expr)?)
+        } else {
+            None
+        };
+
+        let close = token!("`]`"; self: Token::Symbol { value: ']', .. });
+        self.cut(close)?;
+
         // Evaluate possible format strings
         let start = match start {
-            AstNode::FmtString { .. } => self.eval_fmt_string(start)?,
+            AstNode::FmtStringPre { .. } => self.eval_fmt_string(start)?,
             _ => start,
         };
 
         let end = match end {
-            AstNode::FmtString { .. } => self.eval_fmt_string(end)?,
+            AstNode::FmtStringPre { .. } => self.eval_fmt_string(end)?,
             _ => end,
         };
 
@@ -1596,6 +1627,7 @@ impl Parser {
             start: Box::new(start),
             end: Box::new(end),
             range,
+            step: step.map(Box::new),
         })
     }
 

@@ -4,6 +4,7 @@ mod parser;
 mod scanner;
 mod vm;
 
+#[allow(unused_imports)]
 use std::time::Instant;
 
 use codespan_reporting::{
@@ -13,24 +14,35 @@ use codespan_reporting::{
         termcolor::{ColorChoice, StandardStream},
     },
 };
+use line_numbers::LinePositions;
 
 use crate::{
     lexer::{Lexer, ToDiagnostic},
     parser::Parser,
-    vm::{chunk::Chunk, compiler::Compiler, VM},
+    vm::{block::Block, compiler::Compiler, VM},
 };
 
+const DEBUG: bool = false;
+const TIME: bool = false;
+
 fn main() {
+    let mut start = Instant::now();
+    let mut mem_before = 0;
+
     let source = std::fs::read_to_string("./examples/test.tail").unwrap();
 
     let mut files = SimpleFiles::new();
     files.add("src", &source);
 
+    let line_positions = LinePositions::from(source.as_str());
+
     let writer = StandardStream::stderr(ColorChoice::Auto);
     let mut config = term::Config::default();
     config.chars = term::Chars::ascii();
 
-    let start = Instant::now();
+    if TIME {
+        start = Instant::now();
+    }
 
     let mut lexer = Lexer::new(&source);
     if let Err(err) = lexer.lex() {
@@ -39,16 +51,18 @@ fn main() {
         return;
     }
 
-    println!("Lexer took:\t\t{:?}", Instant::now() - start);
+    if TIME {
+        println!("Lexer took:\t\t{:?}", Instant::now() - start);
+
+        mem_before = if let Some(stats) = memory_stats::memory_stats() {
+            stats.physical_mem + stats.virtual_mem
+        } else {
+            0
+        };
+        start = Instant::now();
+    }
 
     // let mut lexer_copy = lexer.clone();
-
-    let mem_before = if let Some(stats) = memory_stats::memory_stats() {
-        stats.physical_mem + stats.virtual_mem
-    } else {
-        0
-    };
-    let start = Instant::now();
 
     let mut parser = Parser::new(lexer);
     let result = parser.parse();
@@ -70,77 +84,93 @@ fn main() {
 
     let ast = result.unwrap();
 
-    let end = Instant::now();
-    let mem_after = if let Some(stats) = memory_stats::memory_stats() {
-        stats.physical_mem + stats.virtual_mem
-    } else {
-        0
-    };
+    if TIME {
+        let end = Instant::now();
+        let mem_after = if let Some(stats) = memory_stats::memory_stats() {
+            stats.physical_mem + stats.virtual_mem
+        } else {
+            0
+        };
 
-    println!(
-        "Parser took:\t\t{:?} ({} bytes)",
-        end - start,
-        mem_after - mem_before
-    );
+        println!(
+            "Parser took:\t\t{:?} ({} bytes)",
+            end - start,
+            mem_after - mem_before
+        );
 
-    // println!("\n--- AST:");
-    // println!("{:#?}", ast);
+        // println!("\n--- AST:");
+        // println!("{:#?}", ast);
 
-    let mem_before = if let Some(stats) = memory_stats::memory_stats() {
-        stats.physical_mem + stats.virtual_mem
-    } else {
-        0
-    };
-    let start = Instant::now();
+        mem_before = if let Some(stats) = memory_stats::memory_stats() {
+            stats.physical_mem + stats.virtual_mem
+        } else {
+            0
+        };
+        start = Instant::now();
+    }
 
-    let mut chunk = Chunk::new();
+    let mut block = Block::new();
 
-    let mut compiler = Compiler::new();
-    if let Err(err) = compiler.compile(&ast, &mut chunk) {
+    let mut compiler = Compiler::new(line_positions);
+    if let Err(err) = compiler.compile(&ast, &mut block) {
         panic!("{:?}", err);
     }
 
-    let end = Instant::now();
-    let mem_after = if let Some(stats) = memory_stats::memory_stats() {
-        stats.physical_mem + stats.virtual_mem
-    } else {
-        0
-    };
+    if TIME {
+        let end = Instant::now();
+        let mem_after = if let Some(stats) = memory_stats::memory_stats() {
+            stats.physical_mem + stats.virtual_mem
+        } else {
+            0
+        };
 
-    println!(
-        "Compiler took:\t\t{:?} ({} mb)",
-        end - start,
-        (mem_after - mem_before) / 1_000_000
-    );
+        println!(
+            "Compiler took:\t\t{:?} ({} mb)",
+            end - start,
+            (mem_after - mem_before) / 1_000_000
+        );
+    }
 
-    println!("\n[PROGRAM]\n{}", chunk);
+    if DEBUG {
+        println!("\n[PROGRAM]\n{}", block);
 
-    let mem_before = if let Some(stats) = memory_stats::memory_stats() {
-        stats.physical_mem + stats.virtual_mem
-    } else {
-        0
-    };
-    let start = Instant::now();
+        println!("[CONSTANTS]");
+        for (i, constant) in compiler.constants().iter().enumerate() {
+            println!("{:06x}  {:?}", i, constant);
+        }
+        println!();
+    }
 
-    let mut vm = VM::new();
+    if TIME {
+        mem_before = if let Some(stats) = memory_stats::memory_stats() {
+            stats.physical_mem + stats.virtual_mem
+        } else {
+            0
+        };
+        start = Instant::now();
+    }
+
+    let mut vm = VM::new(compiler.constants().clone());
     vm.load_stdlib();
 
-    if let Err(err) = vm.interpret(chunk) {
+    if let Err(err) = vm.interpret(block) {
         panic!("{:?}", err);
     }
 
-    let end = Instant::now();
-    let mem_after = if let Some(stats) = memory_stats::memory_stats() {
-        stats.physical_mem + stats.virtual_mem
-    } else {
-        0
-    };
+    if TIME {
+        let end = Instant::now();
+        let mem_after = if let Some(stats) = memory_stats::memory_stats() {
+            stats.physical_mem + stats.virtual_mem
+        } else {
+            0
+        };
 
-    println!(
-        "VM took:\t\t{:?} ({} mb)",
-        end - start,
-        (mem_after - mem_before) / 1_000_000
-    );
+        println!(
+            "VM took:\t\t{:?} ({} mb)",
+            end - start,
+            (mem_after - mem_before) / 1_000_000
+        );
 
-    println!("Total memory used:\t{} mb", mem_after / 1_000_000);
+        println!("Total memory used:\t{} mb", mem_after / 1_000_000);
+    }
 }

@@ -1,11 +1,8 @@
-use std::{
-    fmt::{Display, Formatter},
-    rc::Rc,
-};
+use std::fmt::{Display, Formatter};
 
 use ecow::EcoString;
 
-use super::{Opcode, Value};
+use super::Opcode;
 
 #[derive(Debug, Clone)]
 struct LineInfo {
@@ -14,32 +11,40 @@ struct LineInfo {
 }
 
 #[derive(Debug, Clone)]
-pub struct Chunk {
-    pub code: Vec<u8>,
+pub struct Block {
+    code: Vec<u8>,
     lines: Vec<LineInfo>,
-    constants: Vec<Rc<Value>>,
 }
 
-impl Chunk {
-    pub fn new() -> Chunk {
-        Chunk {
+impl Block {
+    pub fn new() -> Block {
+        Block {
             code: Vec::new(),
             lines: Vec::new(),
-            constants: Vec::new(),
         }
     }
 
-    pub fn write(&mut self, byte: u8, line: usize) {
+    pub fn code(&self) -> &[u8] {
+        &self.code
+    }
+
+    pub fn size(&self) -> usize {
+        self.code.len()
+    }
+
+    pub fn insert(&mut self, byte: u8, line: usize) {
         self.code.push(byte);
 
-        if let Some(last) = self.lines.last_mut() {
-            if last.line == line {
-                last.count += 1;
-                return;
-            }
+        if let Some(last) = self.lines.iter_mut().rfind(|l| l.line == line) {
+            last.count += 1;
+            return;
         }
 
         self.lines.push(LineInfo { line, count: 1 });
+    }
+
+    pub fn set(&mut self, offset: usize, byte: u8) {
+        self.code[offset] = byte;
     }
 
     pub fn read(&self, pc: usize) -> Option<&u8> {
@@ -52,33 +57,16 @@ impl Chunk {
         for line in self.lines.iter() {
             total += line.count;
 
-            if total >= offset {
+            if total > offset {
                 return Some(line.line);
             }
         }
 
         None
     }
-
-    pub fn add_constant(&mut self, value: Rc<Value>) -> usize {
-        if let Some(idx) = self.find_constant(&value) {
-            return idx;
-        }
-
-        self.constants.push(value);
-        self.constants.len() - 1
-    }
-
-    pub fn get_constant(&self, idx: usize) -> Option<&Rc<Value>> {
-        self.constants.get(idx)
-    }
-
-    fn find_constant(&self, value: &Rc<Value>) -> Option<usize> {
-        self.constants.iter().position(|v| v == value)
-    }
 }
 
-impl Display for Chunk {
+impl Display for Block {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         let mut code = self.code.iter().enumerate();
 
@@ -92,13 +80,9 @@ impl Display for Chunk {
             let instruction = match Opcode::from(*op) {
                 Opcode::LoadConstant => {
                     if let Some((_, idx)) = code.next() {
-                        if let Some(value) = self.constants.get(*idx as usize) {
-                            data = format!(".. .. {:02x} {:02x}", op, idx).into();
+                        data = format!(".. .. {:02x} {:02x}", op, idx).into();
 
-                            format!("LD_CONST {:08} = {}", idx, value)
-                        } else {
-                            panic!("unknown constant");
-                        }
+                        format!("LD_CONST {:06x}", idx)
                     } else {
                         panic!("missing constant idx");
                     }
@@ -119,11 +103,7 @@ impl Display for Chunk {
                         panic!("missing constant idx");
                     };
 
-                    if let Some(value) = self.constants.get(idx) {
-                        format!("LD_CONST {:08} = {}", idx, value)
-                    } else {
-                        panic!("unknown constant: {}", idx);
-                    }
+                    format!("LD_CONST {:06x}", idx)
                 }
                 Opcode::StoreGlobal => "ST_GLOBAL".to_string(),
                 Opcode::LoadLocal => {
@@ -167,33 +147,80 @@ impl Display for Chunk {
                         panic!("missing closure id");
                     };
 
-                    let value = if let Some(value) = self.get_constant(idx) {
-                        value
+                    data = format!(".. .. {:02x} {:02x}", op, idx).into();
+
+                    format!("LD_CLOSURE {:02x}", idx)
+                }
+                Opcode::LoadList => {
+                    let size_lo = code.next();
+                    let size_hi = code.next();
+
+                    let size = if let (Some((_, size_lo)), Some((_, size_hi))) = (size_lo, size_hi)
+                    {
+                        data = format!(".. {:02x} {:02x} {:02x}", op, size_lo, size_hi).into();
+
+                        (*size_lo as usize) | ((*size_hi as usize) << 8)
                     } else {
-                        panic!("unknown closure");
+                        panic!("missing list size");
                     };
 
-                    if let Value::Closure(closure) = value.as_ref() {
-                        let closure = closure.borrow();
+                    format!("LD_LIST {}", size)
+                }
+                Opcode::LoadIterator => "LD_ITER".to_string(),
+                Opcode::LoopIterator => {
+                    let end_lo = code.next();
+                    let end_md = code.next();
+                    let end_hi = code.next();
 
-                        data = format!(".. .. {:02x} {:02x}", op, idx).into();
+                    let end = if let (Some((_, end_lo)), Some((_, end_md)), Some((_, end_hi))) =
+                        (end_lo, end_md, end_hi)
+                    {
+                        data = format!("{:02x} {:02x} {:02x} {:02x}", op, end_lo, end_md, end_hi)
+                            .into();
 
-                        let mut line = String::from(format!("LD_CLOSURE {:02x} = {}", idx, value));
-
-                        for upvalue in &closure.upvalue_refs {
-                            line.push_str(&format!(
-                                "\n                     |  {} {:03x}",
-                                if upvalue.is_local { "LOCAL" } else { "UPVAL" },
-                                upvalue.index
-                            ));
-                        }
-
-                        line
+                        (*end_lo as usize) | ((*end_md as usize) << 8) | ((*end_hi as usize) << 16)
                     } else {
-                        panic!("invalid closure");
+                        panic!("missing end offset");
+                    };
+
+                    format!("LOOP_ITER {:06x} ({:04x})", end, i + end as usize)
+                }
+                Opcode::IteratorAppend => {
+                    let back_lo = code.next();
+                    let back_md = code.next();
+                    let back_hi = code.next();
+
+                    let back = if let (Some((_, back_lo)), Some((_, back_md)), Some((_, back_hi))) =
+                        (back_lo, back_md, back_hi)
+                    {
+                        data =
+                            format!("{:02x} {:02x} {:02x} {:02x}", op, back_lo, back_md, back_hi)
+                                .into();
+
+                        (*back_lo as usize)
+                            | ((*back_md as usize) << 8)
+                            | ((*back_hi as usize) << 16)
+                    } else {
+                        panic!("missing back offset");
+                    };
+
+                    format!("ITER_APPEND {:06x} ({:04x})", back, i - back as usize)
+                }
+                Opcode::BuildString => {
+                    let size = code.next();
+
+                    if let Some((_, size)) = size {
+                        data = format!(".. .. {:02x} {:02x}", op, size).into();
+
+                        format!("BUILD_STR {}", size)
+                    } else {
+                        panic!("missing string size");
                     }
                 }
+                Opcode::LoadRangeInclusive => "LD_RANGE_INC".to_string(),
+                Opcode::LoadRangeExclusive => "LD_RANGE_EXC".to_string(),
                 Opcode::Pop => "POP".to_string(),
+                Opcode::PopTop => "POP_TOP".to_string(),
                 Opcode::Jump => {
                     let offset_lo = code.next();
                     let offset_md = code.next();
@@ -216,7 +243,7 @@ impl Display for Chunk {
                             panic!("missing jump offset");
                         };
 
-                    format!("JMP {:06x} ({})", offset, i + offset as usize)
+                    format!("JMP {:06x} ({:04x})", offset, i + offset as usize)
                 }
                 Opcode::JumpIfFalse => {
                     let offset_lo = code.next();
@@ -240,7 +267,31 @@ impl Display for Chunk {
                             panic!("missing jump offset");
                         };
 
-                    format!("JF {:06x}", offset)
+                    format!("JF {:06x} ({:04x})", offset, i + offset as usize)
+                }
+                Opcode::JumpBack => {
+                    let offset_lo = code.next();
+                    let offset_md = code.next();
+                    let offset_hi = code.next();
+
+                    let offset =
+                        if let (Some((_, offset_lo)), Some((_, offset_mi)), Some((_, offset_hi))) =
+                            (offset_lo, offset_md, offset_hi)
+                        {
+                            data = format!(
+                                "{:02x} {:02x} {:02x} {:02x}",
+                                op, offset_lo, offset_mi, offset_hi
+                            )
+                            .into();
+
+                            (*offset_lo as usize)
+                                | ((*offset_mi as usize) << 8)
+                                | ((*offset_hi as usize) << 16)
+                        } else {
+                            panic!("missing jump offset");
+                        };
+
+                    format!("JB {:06x} ({:04x})", offset, i as isize - offset as isize)
                 }
                 Opcode::Equals => "EQ".to_string(),
                 Opcode::NotEquals => "NEQ".to_string(),
@@ -256,24 +307,24 @@ impl Display for Chunk {
                 Opcode::Concatenate => "CONCAT".to_string(),
                 Opcode::Return => "RET".to_string(),
                 Opcode::Nop => "NOP".to_string(),
-                _ => todo!("opcode: {:?}", Opcode::from(*op)),
+                _ => format!("opcode: {:?}", Opcode::from(*op)),
             };
 
             let line = self.get_line(i).unwrap();
             let line = if line == last_line {
-                "   |".to_string()
+                "    ".to_string()
             } else {
                 last_line = line;
-                format!("{:04}", line)
+                format!("{:>4}", line)
             };
 
-            writeln!(f, "{:#04}  {} {}  {}", i, line, data, instruction)?;
+            writeln!(f, "{:04x}  {} | {}  {}", i, line, data, instruction)?;
         }
 
-        writeln!(f, "\n[CONSTANTS]")?;
-        for (idx, constant) in self.constants.iter().enumerate() {
-            writeln!(f, "{:03}  {}", idx, constant)?;
-        }
+        // writeln!(f, "\n[CONSTANTS]")?;
+        // for (idx, constant) in self.constants.iter().enumerate() {
+        //     writeln!(f, "{:03}  {:?}", idx, constant)?;
+        // }
 
         Ok(())
     }
