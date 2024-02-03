@@ -37,6 +37,7 @@ pub enum Opcode {
     Call,
     LoadClosure,
     LoadList,
+    LoadRecord,
     LoadRangeInclusive,
     LoadRangeExclusive,
     Indexing,
@@ -59,13 +60,9 @@ pub enum Opcode {
     GreaterThanOrEqual,
     #[allow(dead_code)]
     Negate,
-    #[allow(dead_code)]
     Add,
-    #[allow(dead_code)]
     Subtract,
-    #[allow(dead_code)]
     Multiply,
-    #[allow(dead_code)]
     Divide,
     Concatenate,
     Return,
@@ -235,6 +232,7 @@ pub enum Value {
     String(EcoString),
     Number(f64),
     List(Rc<Vec<Rc<Value>>>),
+    Record(FxHashMap<EcoString, Rc<Value>>),
     RangeList(Rc<RefCell<RangeListInner>>),
     Iterator(Rc<RefCell<IteratorInner>>),
     Closure(Rc<RefCell<Closure>>),
@@ -253,6 +251,7 @@ impl Value {
             Value::String(_) => "string",
             Value::Number(_) => "number",
             Value::List(_) => "list",
+            Value::Record(_) => "record",
             Value::RangeList(_) => "range",
             Value::Iterator(_) => "iterator",
             Value::Closure(_) => "closure",
@@ -269,6 +268,7 @@ impl Debug for Value {
             Value::String(value) => write!(f, "\"{}\"", value),
             Value::Number(value) => write!(f, "{:?}", value),
             Value::List(value) => write!(f, "{:?}", value),
+            Value::Record(value) => write!(f, "{:?}", value),
             Value::RangeList(value) => write!(f, "{:?}", value.borrow()),
             Value::Iterator(_) => write!(f, "<iterator>"),
             Value::Closure(value) => {
@@ -296,18 +296,31 @@ impl Display for Value {
             Value::Bool(value) => write!(f, "{}", value),
             Value::String(value) => write!(f, "{}", value),
             Value::Number(value) => write!(f, "{:?}", value),
-            Value::List(value) => {
+            Value::List(items) => {
                 write!(f, "[")?;
 
-                for (i, item) in value.iter().enumerate() {
-                    write!(f, "{}", item)?;
+                for (i, value) in items.iter().enumerate() {
+                    write!(f, "{}", value)?;
 
-                    if i < value.len() - 1 {
+                    if i < items.len() - 1 {
                         write!(f, ", ")?;
                     }
                 }
 
                 write!(f, "]")
+            }
+            Value::Record(entries) => {
+                write!(f, "{{")?;
+
+                for (i, (key, value)) in entries.iter().enumerate() {
+                    write!(f, "{}: {}", key, value)?;
+
+                    if i < entries.len() - 1 {
+                        write!(f, ", ")?;
+                    }
+                }
+
+                write!(f, "}}")
             }
             Value::RangeList(value) => write!(f, "{:?}", value.borrow()),
             Value::Iterator(_) => write!(f, "<iterator>"),
@@ -769,11 +782,9 @@ impl VM {
                             let size_hi = chunk.read(pc + 1);
 
                             let size = if let (Some(size_lo), Some(size_hi)) = (size_lo, size_hi) {
-                                data = format!(
-                                    "{:02x} {:02x} {:02x} {:02x}",
-                                    op as u8, size_lo, size_hi, 0
-                                )
-                                .into();
+                                data =
+                                    format!(".. {:02x} {:02x} {:02x}", op as u8, size_lo, size_hi)
+                                        .into();
 
                                 (*size_lo as usize) | ((*size_hi as usize) << 8)
                             } else {
@@ -782,8 +793,25 @@ impl VM {
 
                             format!("LD_LIST {:04x}", size)
                         }
+                        Opcode::LoadRecord => {
+                            let size_lo = chunk.read(pc);
+                            let size_hi = chunk.read(pc + 1);
+
+                            let size = if let (Some(size_lo), Some(size_hi)) = (size_lo, size_hi) {
+                                data =
+                                    format!(".. {:02x} {:02x} {:02x}", op as u8, size_lo, size_hi)
+                                        .into();
+
+                                (*size_lo as usize) | ((*size_hi as usize) << 8)
+                            } else {
+                                panic!("missing record size");
+                            };
+
+                            format!("LD_RECORD {:04x}", size)
+                        }
                         Opcode::LoadRangeInclusive => "LD_RANGE_INC".to_string(),
                         Opcode::LoadRangeExclusive => "LD_RANGE_EXC".to_string(),
+                        Opcode::Indexing => "INDEX".to_string(),
                         Opcode::LoadIterator => "LD_ITER".to_string(),
                         Opcode::LoopIterator => {
                             let end_lo = chunk.read(pc);
@@ -937,6 +965,7 @@ impl VM {
                     Opcode::Call => self.op_call()?,
                     Opcode::LoadClosure => self.op_gen_closure()?,
                     Opcode::LoadList => self.op_ld_list()?,
+                    Opcode::LoadRecord => self.op_ld_record()?,
                     Opcode::LoadRangeInclusive => self.op_ld_range(false)?,
                     Opcode::LoadRangeExclusive => self.op_ld_range(true)?,
                     Opcode::Indexing => self.op_index()?,
@@ -1063,6 +1092,64 @@ impl VM {
                 self.stack.push(callee.clone());
             }
         }
+    }
+
+    fn index_list(&mut self, list: Rc<Value>, index: Rc<Value>) -> VMResult {
+        let index = if let Value::Number(index) = index.as_ref() {
+            *index as usize
+        } else {
+            println!("index: invalid index, number expected");
+            return Err(VMError::RuntimeError);
+        };
+
+        let value = match list.as_ref() {
+            Value::List(items) => {
+                if let Some(value) = items.get(index) {
+                    value.clone()
+                } else {
+                    println!("index: out of bounds");
+                    return Err(VMError::RuntimeError);
+                }
+            }
+            Value::RangeList(range) => {
+                if let Some(value) = range.borrow_mut().get(index) {
+                    value.clone()
+                } else {
+                    println!("index: out of bounds");
+                    return Err(VMError::RuntimeError);
+                }
+            }
+            _ => unreachable!(),
+        };
+
+        self.stack.push(value);
+
+        Ok(())
+    }
+
+    fn index_record(&mut self, record: Rc<Value>, key: Rc<Value>) -> VMResult {
+        let key = if let Value::String(value) = key.as_ref() {
+            value.clone()
+        } else {
+            println!("index: invalid key, string expected");
+            return Err(VMError::RuntimeError);
+        };
+
+        let value = match record.as_ref() {
+            Value::Record(entries) => {
+                if let Some(value) = entries.get(&key) {
+                    value.clone()
+                } else {
+                    println!("index: key \"{}\" not found in record", key);
+                    return Err(VMError::RuntimeError);
+                }
+            }
+            _ => unreachable!(),
+        };
+
+        self.stack.push(value);
+
+        Ok(())
     }
 
     // LD_CONST <id: u8>
@@ -1332,6 +1419,49 @@ impl VM {
         Ok(())
     }
 
+    // LD_RECORD <size: u16>
+    fn op_ld_record(&mut self) -> VMResult {
+        let size_lo = self.read_byte();
+        let size_hi = self.read_byte();
+
+        let size = if let (Some(size_lo), Some(size_hi)) = (size_lo, size_hi) {
+            (size_lo as usize) | ((size_hi as usize) << 8)
+        } else {
+            println!("ld_record: missing size");
+            return Err(VMError::RuntimeError);
+        };
+
+        let mut record = FxHashMap::<EcoString, Rc<Value>>::default();
+        record.reserve(size);
+
+        for _ in 0..size {
+            let key = if let Some(key) = self.stack.pop() {
+                if let Value::String(key) = key.as_ref() {
+                    key.clone()
+                } else {
+                    println!("ld_record: key should be a string (this is probably a bug)");
+                    return Err(VMError::RuntimeError);
+                }
+            } else {
+                println!("ld_record: missing key");
+                return Err(VMError::RuntimeError);
+            };
+
+            let value = if let Some(value) = self.stack.pop() {
+                value
+            } else {
+                println!("ld_record: missing value");
+                return Err(VMError::RuntimeError);
+            };
+
+            record.insert(key, value);
+        }
+
+        self.stack.push(Value::Record(record.into()).into());
+
+        Ok(())
+    }
+
     // LD_RANGE
     fn op_ld_range(&mut self, is_exclusive: bool) -> VMResult {
         let step = self.stack.pop();
@@ -1361,46 +1491,30 @@ impl VM {
 
     // INDEX
     fn op_index(&mut self) -> VMResult {
-        let index = self.stack.pop();
-        let value = self.stack.pop();
+        let index = if let Some(index) = self.stack.pop() {
+            index
+        } else {
+            println!("index: missing index");
+            return Err(VMError::RuntimeError);
+        };
 
-        if let (Some(value), Some(index)) = (value, index) {
-            let index = if let Value::Number(index) = index.as_ref() {
-                *index as usize
-            } else {
-                println!("index: invalid index");
+        let value = if let Some(value) = self.stack.pop() {
+            value
+        } else {
+            println!("index: missing value");
+            return Err(VMError::RuntimeError);
+        };
+
+        match value.as_ref() {
+            Value::List(_) | Value::RangeList(_) => self.index_list(value, index)?,
+            Value::Record(_) => self.index_record(value, index)?,
+            _ => {
+                println!("index: invalid value, expected list or record");
                 return Err(VMError::RuntimeError);
-            };
-
-            let value = match value.as_ref() {
-                Value::List(value) => {
-                    if let Some(value) = value.get(index) {
-                        value.clone()
-                    } else {
-                        println!("index: out of bounds");
-                        return Err(VMError::RuntimeError);
-                    }
-                }
-                Value::RangeList(value) => {
-                    if let Some(value) = value.borrow_mut().get(index) {
-                        value.clone()
-                    } else {
-                        println!("index: out of bounds");
-                        return Err(VMError::RuntimeError);
-                    }
-                }
-                _ => {
-                    println!("index: invalid value");
-                    return Err(VMError::RuntimeError);
-                }
-            };
-
-            self.stack.push(value);
-            return Ok(());
+            }
         }
 
-        println!("index: invalid operands");
-        Err(VMError::RuntimeError)
+        Ok(())
     }
 
     // LD_ITER

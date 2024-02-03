@@ -784,7 +784,7 @@ impl Parser {
     fn parse_if(&mut self) -> PResult {
         let if_ = token!("`if`"; self: Token::Keyword { name: Keyword::If, .. })?;
 
-        let cond = cut!(self: parse_expr)?;
+        let cond = cut!(self: parse_expr_stmt)?;
 
         let then = token!("`then`"; self: Token::Keyword { name: Keyword::Then, .. });
         self.cut(then)?;
@@ -839,7 +839,7 @@ impl Parser {
     fn parse_case(&mut self) -> PResult {
         let case = token!("`case`"; self: Token::Keyword { name: Keyword::Case, .. })?;
 
-        let expr = cut!(self: parse_expr)?;
+        let expr = cut!(self: parse_expr_stmt)?;
 
         let of = token!("`of`"; self: Token::Keyword { name: Keyword::Of, .. });
         self.cut(of)?;
@@ -1004,12 +1004,12 @@ impl Parser {
 
     fn parse_expr(&mut self) -> PResult {
         any! {
-            self: parse_range, "range"
-                | parse_identifier, "identifier"
+            self: parse_identifier, "identifier"
                 | parse_bool, "boolean"
                 | parse_string, "string"
                 | parse_fmt_string, "format string"
                 | parse_number, "number"
+                | parse_range, "range"
                 | parse_list, "list"
                 | parse_record, "record"
                 | parse_func_ref, "function reference"
@@ -1541,6 +1541,10 @@ impl Parser {
 
         loop {
             let key = cut!(self: parse_identifier)?;
+            let key = match key {
+                AstNode::Ident { name, range } => AstNode::StrLit { value: name, range },
+                _ => unreachable!(),
+            };
 
             let eq = token!("`:`"; self: Token::Symbol { value: ':', .. });
             self.cut(eq)?;

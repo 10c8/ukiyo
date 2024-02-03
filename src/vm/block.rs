@@ -166,6 +166,21 @@ impl Display for Block {
 
                     format!("LD_LIST {}", size)
                 }
+                Opcode::LoadRecord => {
+                    let size_lo = code.next();
+                    let size_hi = code.next();
+
+                    let size = if let (Some((_, size_lo)), Some((_, size_hi))) = (size_lo, size_hi)
+                    {
+                        data = format!(".. {:02x} {:02x} {:02x}", op, size_lo, size_hi).into();
+
+                        (*size_lo as usize) | ((*size_hi as usize) << 8)
+                    } else {
+                        panic!("missing record size");
+                    };
+
+                    format!("LD_RECORD {:04x}", size)
+                }
                 Opcode::LoadIterator => "LD_ITER".to_string(),
                 Opcode::LoopIterator => {
                     let end_lo = code.next();
@@ -219,6 +234,7 @@ impl Display for Block {
                 }
                 Opcode::LoadRangeInclusive => "LD_RANGE_INC".to_string(),
                 Opcode::LoadRangeExclusive => "LD_RANGE_EXC".to_string(),
+                Opcode::Indexing => "INDEX".to_string(),
                 Opcode::Pop => "POP".to_string(),
                 Opcode::PopTop => "POP_TOP".to_string(),
                 Opcode::Jump => {

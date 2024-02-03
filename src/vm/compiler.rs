@@ -572,6 +572,24 @@ impl Compiler {
 
                 Ok(())
             }
+            AstNode::Record {
+                keys,
+                values,
+                range,
+            } => {
+                for (key, value) in keys.iter().zip(values.iter()).rev() {
+                    self.compile(value, block)?;
+                    self.compile(key, block)?;
+                }
+
+                let size = keys.len();
+
+                self.emit(block, Opcode::LoadRecord.into(), range);
+                self.emit(block, size as u8, range);
+                self.emit(block, (size >> 8) as u8, range);
+
+                Ok(())
+            }
             AstNode::Range {
                 mode,
                 start,
@@ -599,7 +617,7 @@ impl Compiler {
 
                 Ok(())
             }
-            _ => todo!("compile {:?}", node),
+            _ => todo!("compile {:#?}", node),
         }
     }
 

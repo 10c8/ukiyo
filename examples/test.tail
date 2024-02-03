@@ -1,50 +1,60 @@
-primes_to m ->
-  eratos lst ->
-    const p -> head lst
-    const ps -> tail lst
-    const pp -> mul p p
+# primes_to m ->
+#   eratos lst ->
+#     const p -> head lst
+#     const ps -> tail lst
+#     const pp -> mul p p
 
-    if (gt pp m) then
-      lst
-    else
-      [p] ++ (eratos (minus ps [pp..=m, p]))
+#     if gt pp m then
+#       lst
+#     else
+#       [p] ++ (eratos (minus ps [pp..=m, p]))
 
-  eratos [2..=m]
+#   eratos [2..=m]
 
-minus a b ->
-  if (eq (len a) 0) then
-    a
-  elif (eq (len b) 0) then
-    a
-  else
-    const x -> head a
-    const y -> head b
+# minus a b ->
+#   if eq (len a) 0 then
+#     a
+#   elif eq (len b) 0 then
+#     a
+#   else
+#     const x -> head a
+#     const y -> head b
 
-    case (compare x y) of
-      "lt" => [x] ++ (minus (tail a) b)
-      "eq" => (minus (tail a) (tail b))
-      "gt" => (minus a (tail b))
+#     case compare x y of
+#       "lt" => [x] ++ (minus (tail a) b)
+#       "eq" => minus (tail a) (tail b)
+#       "gt" => minus a (tail b)
 
-const to -> 500
-const primes -> primes_to to
-trace $"{{len primes}} primes to {{to}}: {{primes}}"
+# const to -> 500
+# const primes -> primes_to to
+# trace $"{{len primes}} primes to {{to}}: {{primes}}"
+
 
 # memoize f ->
 #   const memo -> newRecord {}
+
 #   !x -> if (has memo x) then
 #     readRecord memo x
 #   else
 #     writeRecord memo x (f x)
 
-# fib_inner n -> if (lt n 2) then
+# fib_inner n -> if lt n 2 then
 #   n
 # else
-#   (add (fib (sub n 1)) (fib (sub n 2)))
+#   add (fib (sub n 1)) (fib (sub n 2))
 
-# const fib -> memoize fib_inner
+# const fib -> memoize &fib_inner
 
 # trace (fib 35)
 
-{
-  apple: "red"
+
+const fruits -> newRecord {
+  apple: "red",
+  banana: "yellow",
+  grape: "purple"
 }
+
+# TODO: Fix parser so that `fruits @ "apple"` is parsed correctly
+trace ((fruits) @ "apple")
+trace ((fruits) @ "grape")
+trace ((fruits) @ "banana")
