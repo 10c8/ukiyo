@@ -14,6 +14,7 @@ use super::{block::Block, Opcode, Upvalue, Value, DEBUG};
 pub struct Local {
     name: EcoString,
     is_capture: bool,
+    is_final: bool,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -73,8 +74,10 @@ impl CompilerState {
 
 pub struct Compiler {
     states: Vec<CompilerState>,
+
     // TODO: Would this benefit from being an Rc?
     constants: Vec<Rc<Value>>,
+    final_globals: Vec<usize>,
 
     line_positions: LinePositions,
     original_range: Option<CodeRange>,
@@ -84,7 +87,9 @@ impl Compiler {
     pub fn new(line_positions: LinePositions) -> Self {
         Self {
             states: vec![CompilerState::new()],
+
             constants: Vec::new(),
+            final_globals: Vec::new(),
 
             line_positions,
             original_range: None,
@@ -148,7 +153,7 @@ impl Compiler {
             AstNode::ExprStmt { expr, .. } => self.compile(expr, block),
             AstNode::FuncDecl {
                 id,
-                is_const,
+                is_final,
                 params,
                 body,
                 range,
@@ -158,11 +163,11 @@ impl Compiler {
                     _ => unreachable!(),
                 };
 
-                if *is_const {
+                if *is_final {
                     // Constant functions run once at the time of declaration, so that
                     // later calls will always point to the same value
                     self.compile(body, block)?;
-                    self.emit_store(name, block, range);
+                    self.emit_store(name, block, range, true);
                 } else {
                     match body.as_ref() {
                         AstNode::Block { body, .. } => {
@@ -295,7 +300,7 @@ impl Compiler {
                                 CasePatternKind::Ident => {
                                     // Same as any, but also binds the value to a local
                                     if let AstNode::Ident { name, .. } = expr.as_ref() {
-                                        self.emit_store(name.clone(), block, range);
+                                        self.emit_store(name.clone(), block, range, true);
 
                                         self.emit(block, Opcode::LoadTrue.into(), range);
                                     }
@@ -386,25 +391,21 @@ impl Compiler {
                             // this, but it works for now.
                             self.emit(block, Opcode::LoadConstant.into(), &range);
                             self.emit(block, id as u8, &range);
+
+                            self.emit_call(args.len() as u8, block, range);
                         } else {
-                            self.emit_load(name, block, range);
+                            let is_final = self.emit_load(name, block, range);
+                            if !is_final {
+                                self.emit_call(args.len() as u8, block, range);
+                            }
                         }
                     }
                     AstNode::FuncCall { .. } | AstNode::Lambda { .. } | AstNode::FuncRef { .. } => {
                         self.compile(callee, block)?;
+                        self.emit_call(args.len() as u8, block, range);
                     }
                     _ => unreachable!(),
                 }
-
-                // println!("call line: {:?}", {
-                //     let range = match self.original_range {
-                //         Some(range) => range,
-                //         None => *range,
-                //     };
-                //     self.line_positions.from_offset(range.0).as_usize() + 1
-                // });
-                self.emit(block, Opcode::Call.into(), range);
-                self.emit(block, args.len() as u8, range);
 
                 Ok(())
             }
@@ -454,12 +455,14 @@ impl Compiler {
                 let iter_local = Local {
                     name: EcoString::from("<iterator>"),
                     is_capture: false,
+                    is_final: true,
                 };
                 state.locals.push(iter_local);
 
                 let id_local = Local {
                     name: id,
                     is_capture: false,
+                    is_final: true,
                 };
                 state.locals.push(id_local);
 
@@ -635,7 +638,7 @@ impl Compiler {
         block.insert(op, line);
     }
 
-    fn emit_load(&mut self, name: &EcoString, block: &mut Block, range: &CodeRange) {
+    fn emit_load(&mut self, name: &EcoString, block: &mut Block, range: &CodeRange) -> bool {
         let range = match self.original_range {
             Some(range) => range,
             None => *range,
@@ -644,22 +647,28 @@ impl Compiler {
         let state = self.states.last().unwrap();
 
         // Try to find the variable in the local scope
-        if let Some(idx) = state.locals.iter().rposition(|l| l.name == *name) {
+        if let Some((idx, is_final)) = state
+            .locals
+            .iter()
+            .enumerate()
+            .rfind(|(_, l)| l.name == *name)
+            .map(|(idx, l)| (idx, l.is_final))
+        {
             let captures_self = state.locals.iter().any(|l| l.name == state.current_name);
             let idx = if captures_self { idx - 1 } else { idx };
 
             self.emit(block, Opcode::LoadLocal.into(), &range);
             self.emit(block, idx as u8, &range);
 
-            return;
+            return is_final;
         }
 
         // Try to find an upvalue
-        if let Some(idx) = self.resolve_upvalue(name, block, self.states.len() - 1) {
+        if let Some((idx, is_final)) = self.resolve_upvalue(name, block, self.states.len() - 1) {
             self.emit(block, Opcode::LoadUpvalue.into(), &range);
             self.emit(block, idx as u8, &range);
 
-            return;
+            return is_final;
         }
 
         // Otherwise, assume it's a global
@@ -670,9 +679,18 @@ impl Compiler {
         self.emit(block, name_id as u8, &range);
 
         self.emit(block, Opcode::LoadGlobal.into(), &range);
+
+        let is_final = self.final_globals.contains(&name_id);
+        is_final
     }
 
-    fn emit_store(&mut self, name: EcoString, block: &mut Block, range: &CodeRange) {
+    fn emit_store(
+        &mut self,
+        name: EcoString,
+        block: &mut Block,
+        range: &CodeRange,
+        is_final: bool,
+    ) {
         let range = match self.original_range {
             Some(range) => range,
             None => *range,
@@ -687,6 +705,7 @@ impl Compiler {
             let local = Local {
                 name,
                 is_capture: false,
+                is_final,
             };
             state.locals.push(local);
         } else {
@@ -695,6 +714,10 @@ impl Compiler {
             self.emit(block, name_id as u8, &range);
 
             self.emit(block, Opcode::StoreGlobal.into(), &range);
+
+            if is_final {
+                self.final_globals.push(name_id);
+            }
         }
     }
 
@@ -746,6 +769,7 @@ impl Compiler {
             let local = Local {
                 name,
                 is_capture: false,
+                is_final: true,
             };
             closure_state.locals.push(local);
         }
@@ -783,7 +807,7 @@ impl Compiler {
         self.emit(block, Opcode::LoadConstant.into(), &range);
         self.emit(block, self_id as u8, &range);
 
-        self.emit_store(name, block, &range);
+        self.emit_store(name, block, &range, false);
 
         // If the function captures any upvalues, we need to turn it into a closure
         if !upvalue_refs.is_empty() {
@@ -794,6 +818,16 @@ impl Compiler {
         Ok(())
     }
 
+    fn emit_call(&mut self, argc: u8, block: &mut Block, range: &CodeRange) {
+        let range = match self.original_range {
+            Some(range) => range,
+            None => *range,
+        };
+
+        self.emit(block, Opcode::Call.into(), &range);
+        self.emit(block, argc, &range);
+    }
+
     fn add_constant(&mut self, value: Rc<Value>) -> usize {
         if let Some(idx) = self.constants.iter().rposition(|v| v == &value) {
             return idx;
@@ -801,7 +835,8 @@ impl Compiler {
 
         self.constants.push(value);
 
-        self.constants.len() - 1
+        let id = self.constants.len() - 1;
+        id
     }
 
     fn set_constant(&mut self, idx: usize, value: Rc<Value>) {
@@ -820,7 +855,7 @@ impl Compiler {
         name: &EcoString,
         block: &mut Block,
         state_index: usize,
-    ) -> Option<usize> {
+    ) -> Option<(usize, bool)> {
         if state_index == 0 {
             // Reaching the root level means we looking at a global
             return None;
@@ -839,17 +874,18 @@ impl Compiler {
 
             local.is_capture = true;
 
+            let is_final = local.is_final;
             let idx = self.add_upvalue(idx as u8, true, state_index);
-            return Some(idx);
+            return Some((idx, is_final));
         }
 
-        if let Some(idx) = self.resolve_upvalue(name, block, state_index - 1) {
+        if let Some((idx, is_final)) = self.resolve_upvalue(name, block, state_index - 1) {
             if DEBUG {
                 println!("upvalue (upvalue): {}", name);
             }
 
             let idx = self.add_upvalue(idx as u8, false, state_index);
-            return Some(idx);
+            return Some((idx, is_final));
         }
 
         None
@@ -873,6 +909,9 @@ impl Compiler {
     }
 
     fn optimize(&self, block: &mut Block) {
+        // TODO:
+        // - [ ] Consume `NOP` instructions, adjusting jump offsets to compensate
+
         if DEBUG {
             // Skip optimization in debug mode
             return;
@@ -891,8 +930,8 @@ impl Compiler {
                         | ((block.code()[i + 2] as usize) << 8)
                         | ((block.code()[i + 3] as usize) << 16);
 
-                    let op_at_offset = block.code()[i + offset + 4];
-                    match Opcode::from(op_at_offset) {
+                    let op_at_offset = Opcode::from(block.code()[i + offset + 4]);
+                    match op_at_offset {
                         Opcode::Return => {
                             // A jump to a return statement can be replaced with a return
                             block.set(i, Opcode::Return.into());

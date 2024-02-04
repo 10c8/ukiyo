@@ -16,14 +16,12 @@ pub struct Span {
 pub enum Keyword {
     True,
     False,
+    Final,
     If,
     Elif,
     Else,
     Then,
     Case,
-    Const,
-    Do,
-    Each,
     Of,
 }
 
@@ -41,7 +39,7 @@ pub enum Token {
         span: Span,
     },
     Keyword {
-        // true | false | case | const | do | each | of
+        // true | false | final | if | then | elif | else | case | of
         name: Keyword,
         span: Span,
     },
@@ -206,14 +204,12 @@ fn str_to_keyword(s: &str) -> Option<Keyword> {
     match s {
         "true" => Some(Keyword::True),
         "false" => Some(Keyword::False),
+        "final" => Some(Keyword::Final),
         "if" => Some(Keyword::If),
         "elif" => Some(Keyword::Elif),
         "else" => Some(Keyword::Else),
         "then" => Some(Keyword::Then),
         "case" => Some(Keyword::Case),
-        "const" => Some(Keyword::Const),
-        "do" => Some(Keyword::Do),
-        "each" => Some(Keyword::Each),
         "of" => Some(Keyword::Of),
         _ => None,
     }
@@ -354,8 +350,8 @@ impl Lexer {
                     };
 
                     let token = match identifier.as_str() {
-                        "true" | "false" | "if" | "elif" | "else" | "then" | "case" | "const"
-                        | "do" | "each" | "of" => Token::Keyword {
+                        "true" | "false" | "final" | "if" | "then" | "elif" | "else" | "case"
+                        | "of" => Token::Keyword {
                             name: str_to_keyword(identifier.as_str()).unwrap(),
                             span,
                         },

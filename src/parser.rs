@@ -29,7 +29,7 @@ pub enum AstNode {
     },
     FuncDecl {
         id: Box<AstNode>,
-        is_const: bool,
+        is_final: bool,
         params: EcoVec<AstNode>,
         body: Box<AstNode>,
         range: CodeRange,
@@ -673,15 +673,15 @@ impl Parser {
     }
 
     fn parse_func_decl(&mut self) -> PResult {
-        let const_marker = opt!(self: Token::Keyword { name: Keyword::Const, .. });
+        let final_marker = opt!(self: Token::Keyword { name: Keyword::Final, .. });
 
         let anon_marker = peek!(0, self: Token::Symbol { value: '!', .. });
 
         if anon_marker.is_some() {
-            if const_marker.is_some() {
-                let org_span = const_marker.unwrap().span();
+            if final_marker.is_some() {
+                let org_span = final_marker.unwrap().span();
                 let culprit = Token::Keyword {
-                    name: Keyword::Const,
+                    name: Keyword::Final,
                     span: Span {
                         line: org_span.line,
                         column: org_span.column,
@@ -691,7 +691,7 @@ impl Parser {
 
                 return Err(ParseError::Cut(
                     Box::new(ParseError::Forbidden(
-                        "An anonymous function cannot be constant.",
+                        "An anonymous function cannot be final.",
                     )),
                     culprit,
                 ));
@@ -700,7 +700,7 @@ impl Parser {
             }
         }
 
-        let range_start = const_marker
+        let range_start = final_marker
             .as_ref()
             .map(|tok| tok.span().range.0)
             .unwrap_or_else(|| self.lexer.peek().span().range.0);
@@ -709,10 +709,10 @@ impl Parser {
 
         let params = many!(0.., self: parse_identifier)?;
 
-        if const_marker.is_some() && !params.is_empty() {
-            let org_span = const_marker.unwrap().span();
+        if final_marker.is_some() && !params.is_empty() {
+            let org_span = final_marker.unwrap().span();
             let culprit = Token::Keyword {
-                name: Keyword::Const,
+                name: Keyword::Final,
                 span: Span {
                     line: org_span.line,
                     column: org_span.column,
@@ -722,7 +722,7 @@ impl Parser {
 
             return Err(ParseError::Cut(
                 Box::new(ParseError::Forbidden(
-                    "A constant function cannot have parameters.",
+                    "A final function cannot have parameters.",
                 )),
                 culprit,
             ));
@@ -736,7 +736,7 @@ impl Parser {
 
         Ok(AstNode::FuncDecl {
             id: Box::new(id),
-            is_const: const_marker.is_some(),
+            is_final: final_marker.is_some(),
             params: params.into(),
             body: Box::new(body),
             range,

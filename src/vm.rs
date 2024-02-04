@@ -1411,7 +1411,7 @@ impl VM {
         let callee = if let Some(callee) = self.stack.pop() {
             callee.clone()
         } else {
-            println!("call: value expected");
+            println!("call: callee expected");
             return Err(VMError::RuntimeError);
         };
 
