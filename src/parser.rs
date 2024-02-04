@@ -626,7 +626,7 @@ impl Parser {
 
         // Evaluate possible format string
         let expr = match expr {
-            AstNode::FmtStringPre { .. } => self.eval_fmt_string(expr)?,
+            AstNode::FmtStringPre { .. } => self.eval_fmt_string(&expr)?,
             _ => expr,
         };
 
@@ -801,7 +801,7 @@ impl Parser {
                 break;
             }
 
-            let cond = cut!(self: parse_expr)?;
+            let cond = cut!(self: parse_expr_stmt)?;
 
             let then = token!("`then`"; self: Token::Keyword { name: Keyword::Then, .. });
             self.cut(then)?;
@@ -851,12 +851,6 @@ impl Parser {
         cut!(self: parse_dedent)?;
 
         let range = (case.span().range.0, cases.last().unwrap().range().1);
-
-        // Evaluate possible format string
-        let expr = match expr {
-            AstNode::FmtStringPre { .. } => self.eval_fmt_string(expr)?,
-            _ => expr,
-        };
 
         Ok(AstNode::CaseExpr {
             expr: Box::new(expr),
@@ -1020,27 +1014,11 @@ impl Parser {
     fn parse_func_call(&mut self) -> PResult {
         let id = any! {
             self: parse_identifier, "identifier"
-                | parse_func_ref, "function reference"
                 | parse_par_expr, "expression"
                 | parse_par_func_call, "function call"
         }?;
 
-        let args = many!(0.., self: parse_func_arg)?;
-
-        match id {
-            AstNode::FuncRef { .. } => {
-                if args.is_empty() {
-                    // A function reference without arguments is not a function call:
-                    //  - `&foo`   => `func_ref`
-                    //  - `(&foo)` => `func_call`
-                    //  - `&foo a` => `func_call`
-                    //
-                    // This allows for function references to be used as a value.
-                    return Err(ParseError::Fail);
-                }
-            }
-            _ => {}
-        }
+        let args = many!(0.., self: parse_func_call_arg)?;
 
         let range_start = id.range();
         let range = (
@@ -1057,20 +1035,20 @@ impl Parser {
         })
     }
 
-    fn parse_func_arg(&mut self) -> PResult {
+    fn parse_func_call_arg(&mut self) -> PResult {
         let arg = self.parse_expr()?;
 
         // Evaluate possible format string
         let arg = match arg {
-            AstNode::FmtStringPre { .. } => self.eval_fmt_string(arg)?,
+            AstNode::FmtStringPre { .. } => self.eval_fmt_string(&arg)?,
             _ => arg,
         };
 
         let result = match arg {
             AstNode::Ident { .. } => AstNode::FuncCall {
-                callee: Box::new(arg.clone()),
-                args: EcoVec::new(),
                 range: arg.range(),
+                callee: Box::new(arg),
+                args: EcoVec::new(),
             },
             _ => arg,
         };
@@ -1125,12 +1103,12 @@ impl Parser {
 
         // Evaluate possible format strings
         let expr = match expr {
-            AstNode::FmtStringPre { .. } => self.eval_fmt_string(expr)?,
+            AstNode::FmtStringPre { .. } => self.eval_fmt_string(&expr)?,
             _ => expr,
         };
 
         let index = match index {
-            AstNode::FmtStringPre { .. } => self.eval_fmt_string(index)?,
+            AstNode::FmtStringPre { .. } => self.eval_fmt_string(&index)?,
             _ => index,
         };
 
@@ -1165,12 +1143,12 @@ impl Parser {
 
         // Evaluate possible format strings
         let left = match left {
-            AstNode::FmtStringPre { .. } => self.eval_fmt_string(left)?,
+            AstNode::FmtStringPre { .. } => self.eval_fmt_string(&left)?,
             _ => left,
         };
 
         let right = match right {
-            AstNode::FmtStringPre { .. } => self.eval_fmt_string(right)?,
+            AstNode::FmtStringPre { .. } => self.eval_fmt_string(&right)?,
             _ => right,
         };
 
@@ -1201,7 +1179,7 @@ impl Parser {
 
         // Evaluate possible format strings
         let left = match left {
-            AstNode::FmtStringPre { .. } => self.eval_fmt_string(left)?,
+            AstNode::FmtStringPre { .. } => self.eval_fmt_string(&left)?,
             _ => left,
         };
 
@@ -1266,7 +1244,7 @@ impl Parser {
         })
     }
 
-    fn eval_fmt_string(&mut self, fmt_string: AstNode) -> PResult {
+    fn eval_fmt_string(&mut self, fmt_string: &AstNode) -> PResult {
         // Format string evaluation is a two-step process for performance reasons:
         // The parser might encounter a format string in the middle of trying to parse a
         // larger expression, and it might fail. It would be a waste to evaluate the format
@@ -1331,7 +1309,7 @@ impl Parser {
                                                 "Invalid format string substitution.",
                                             )),
                                             Token::String {
-                                                value: capture.clone(),
+                                                value: capture,
                                                 span: Span {
                                                     line: original.span().line,
                                                     column: original.span().column + part_start,
@@ -1385,12 +1363,15 @@ impl Parser {
             }
 
             if !part.is_empty() {
-                parts.push(AstNode::StrLit { value: part, range });
+                parts.push(AstNode::StrLit {
+                    value: part,
+                    range: *range,
+                });
             }
 
             let result = AstNode::FmtString {
                 parts: parts.into(),
-                range,
+                range: *range,
             };
 
             return Ok(result);
@@ -1500,7 +1481,7 @@ impl Parser {
         // Evaluate possible format strings
         for item in &mut items {
             if let AstNode::FmtStringPre { .. } = item {
-                *item = self.eval_fmt_string(item.clone())?;
+                *item = self.eval_fmt_string(&item)?;
             }
         }
 
@@ -1571,7 +1552,7 @@ impl Parser {
             // Evaluate possible format strings
             for value in &mut values {
                 if let AstNode::FmtStringPre { .. } = value {
-                    *value = self.eval_fmt_string(value.clone())?;
+                    *value = self.eval_fmt_string(&value)?;
                 }
             }
         }
@@ -1613,16 +1594,26 @@ impl Parser {
         let close = token!("`]`"; self: Token::Symbol { value: ']', .. });
         self.cut(close)?;
 
-        // Evaluate possible format strings
-        let start = match start {
-            AstNode::FmtStringPre { .. } => self.eval_fmt_string(start)?,
-            _ => start,
-        };
+        match start {
+            AstNode::StrLit { .. } | AstNode::FmtString { .. } => {
+                return Err(ParseError::Forbidden("Invalid range start value."));
+            }
+            _ => {}
+        }
 
-        let end = match end {
-            AstNode::FmtStringPre { .. } => self.eval_fmt_string(end)?,
-            _ => end,
-        };
+        match end {
+            AstNode::StrLit { .. } | AstNode::FmtString { .. } => {
+                return Err(ParseError::Forbidden("Invalid range end value."));
+            }
+            _ => {}
+        }
+
+        match step {
+            Some(AstNode::StrLit { .. }) | Some(AstNode::FmtString { .. }) => {
+                return Err(ParseError::Forbidden("Invalid range step value."));
+            }
+            _ => {}
+        }
 
         let range = (start.range().0, end.range().1);
 

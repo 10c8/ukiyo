@@ -102,7 +102,7 @@ impl IteratorInner {
     }
 
     pub fn next(&mut self) -> Option<Rc<Value>> {
-        match self.collection.as_ref() {
+        match Rc::get_mut(&mut self.collection).unwrap() {
             Value::List(collection) => {
                 if self.index < collection.len() {
                     let value = collection[self.index].clone();
@@ -194,6 +194,24 @@ impl RangeListInner {
     pub fn len(&self) -> usize {
         self.size
     }
+
+    pub fn resolve(&mut self) {
+        if self.last < self.size {
+            for i in self.last..self.size {
+                let n = if self.is_reverse {
+                    self.start - ((i + 1) * self.step)
+                } else {
+                    self.start + ((i + 1) * self.step)
+                };
+
+                self.values.push(Rc::new(Value::Number(n as f64)));
+            }
+
+            self.last = self.size;
+        }
+
+        self.last = self.size;
+    }
 }
 
 impl Iterator for RangeListInner {
@@ -231,8 +249,9 @@ pub enum Value {
     Bool(bool),
     String(EcoString),
     Number(f64),
-    List(Rc<Vec<Rc<Value>>>),
+    List(Vec<Rc<Value>>),
     Record(FxHashMap<EcoString, Rc<Value>>),
+    MutableRecord(Rc<RefCell<FxHashMap<EcoString, Rc<Value>>>>),
     RangeList(Rc<RefCell<RangeListInner>>),
     Iterator(Rc<RefCell<IteratorInner>>),
     Closure(Rc<RefCell<Closure>>),
@@ -252,6 +271,7 @@ impl Value {
             Value::Number(_) => "number",
             Value::List(_) => "list",
             Value::Record(_) => "record",
+            Value::MutableRecord(_) => "mutable record",
             Value::RangeList(_) => "range",
             Value::Iterator(_) => "iterator",
             Value::Closure(_) => "closure",
@@ -269,6 +289,7 @@ impl Debug for Value {
             Value::Number(value) => write!(f, "{:?}", value),
             Value::List(value) => write!(f, "{:?}", value),
             Value::Record(value) => write!(f, "{:?}", value),
+            Value::MutableRecord(value) => write!(f, "{:?}", value.borrow()),
             Value::RangeList(value) => write!(f, "{:?}", value.borrow()),
             Value::Iterator(_) => write!(f, "<iterator>"),
             Value::Closure(value) => {
@@ -322,6 +343,7 @@ impl Display for Value {
 
                 write!(f, "}}")
             }
+            Value::MutableRecord(_) => write!(f, "<mut record>"),
             Value::RangeList(value) => write!(f, "{:?}", value.borrow()),
             Value::Iterator(_) => write!(f, "<iterator>"),
             Value::Closure(value) => {
@@ -413,6 +435,13 @@ impl VM {
     pub fn load_stdlib(&mut self) {
         std_fn!(self: std_trace, 1);
 
+        std_fn!(self: std_str, 1);
+
+        std_fn!(self: std_mrecord_new, 1);
+        std_fn!(self: std_mrecord_read, 2);
+        std_fn!(self: std_mrecord_write, 3);
+        std_fn!(self: std_mrecord_has, 2);
+
         std_fn!(self: std_compare, 2);
 
         std_fn!(self: std_pow, 2);
@@ -428,9 +457,100 @@ impl VM {
 
     fn std_trace(&mut self) {
         let value = self.stack.pop().unwrap();
+
         println!("{}", value);
 
         self.stack.push(self.nil_value.clone());
+    }
+
+    fn std_str(&mut self) {
+        let value = self.stack.pop().unwrap();
+        let value = EcoString::from(value.to_string());
+
+        let result = Rc::new(Value::String(value));
+        self.stack.push(result);
+    }
+
+    fn std_mrecord_new(&mut self) {
+        let initial = self.stack.pop().unwrap();
+        let initial = if let Value::Record(entries) = initial.as_ref() {
+            Rc::new(RefCell::new(entries.clone()))
+        } else {
+            panic!("mrecord_new: invalid record");
+        };
+
+        let result = Rc::new(Value::MutableRecord(initial));
+        self.stack.push(result);
+    }
+
+    fn std_mrecord_read(&mut self) {
+        let key = self.stack.pop().unwrap();
+        let record = self.stack.pop().unwrap();
+
+        let key = if let Value::String(value) = key.as_ref() {
+            value.clone()
+        } else {
+            panic!("mrecord_read: invalid key");
+        };
+
+        if let Value::MutableRecord(record) = record.as_ref() {
+            let record = record.borrow();
+
+            if let Some(value) = record.get(&key) {
+                self.stack.push(value.clone());
+            } else {
+                panic!(
+                    "read_recmrecord_readord: key \"{}\" not found in record",
+                    key
+                );
+            }
+        } else {
+            panic!("mrecord_read: mutable record expected");
+        }
+    }
+
+    fn std_mrecord_write(&mut self) {
+        let value = self.stack.pop().unwrap();
+        let key = self.stack.pop().unwrap();
+        let record = self.stack.pop().unwrap();
+
+        let key = if let Value::String(value) = key.as_ref() {
+            value.clone()
+        } else {
+            panic!("mrecord_write: invalid key");
+        };
+
+        if let Value::MutableRecord(record) = record.as_ref() {
+            let mut record = record.borrow_mut();
+            record.insert(key, value.clone());
+        } else {
+            panic!("mrecord_write: mutable record expected");
+        }
+
+        self.stack.push(value);
+    }
+
+    fn std_mrecord_has(&mut self) {
+        let key = self.stack.pop().unwrap();
+        let record = self.stack.pop().unwrap();
+
+        let key = if let Value::String(value) = key.as_ref() {
+            value.clone()
+        } else {
+            panic!("mrecord_has: invalid key");
+        };
+
+        if let Value::MutableRecord(record) = record.as_ref() {
+            let record = record.borrow();
+
+            if record.contains_key(&key) {
+                self.stack.push(self.true_value.clone());
+            } else {
+                self.stack.push(self.false_value.clone());
+            }
+        } else {
+            panic!("mrecord_read: mutable record expected");
+        }
     }
 
     fn std_compare(&mut self) {
@@ -439,7 +559,6 @@ impl VM {
 
         if let Value::Number(a) = a.as_ref() {
             if let Value::Number(b) = b.as_ref() {
-                // Like Haskell's `compare` function.
                 let result = if a < b {
                     "lt"
                 } else if a > b {
@@ -517,7 +636,7 @@ impl VM {
                     }
                 }
 
-                Rc::new(Value::List(Rc::new(result)))
+                Rc::new(Value::List(result))
             }
             Value::RangeList(range) => {
                 let mut range = range.borrow_mut();
@@ -532,7 +651,7 @@ impl VM {
                     }
                 }
 
-                Rc::new(Value::List(Rc::new(result)))
+                Rc::new(Value::List(result))
             }
             _ => panic!("tail: invalid argument"),
         };
@@ -559,7 +678,7 @@ impl VM {
                         }
                     }
 
-                    Rc::new(Value::List(Rc::new(result)))
+                    Rc::new(Value::List(result))
                 }
                 Value::RangeList(range) => {
                     let mut result = Vec::new();
@@ -572,7 +691,7 @@ impl VM {
                         }
                     }
 
-                    Rc::new(Value::List(Rc::new(result)))
+                    Rc::new(Value::List(result))
                 }
                 _ => panic!("take: invalid argument"),
             };
@@ -603,7 +722,7 @@ impl VM {
                         }
                     }
 
-                    Rc::new(Value::List(Rc::new(result)))
+                    Rc::new(Value::List(result))
                 }
                 Value::RangeList(range) => {
                     let mut range = range.borrow_mut();
@@ -618,7 +737,7 @@ impl VM {
                         }
                     }
 
-                    Rc::new(Value::List(Rc::new(result)))
+                    Rc::new(Value::List(result))
                 }
                 _ => panic!("drop: invalid argument"),
             };
@@ -1457,7 +1576,7 @@ impl VM {
             record.insert(key, value);
         }
 
-        self.stack.push(Value::Record(record.into()).into());
+        self.stack.push(Rc::new(Value::Record(record)));
 
         Ok(())
     }
@@ -1560,7 +1679,7 @@ impl VM {
                 let frame = self.frames.last_mut().unwrap();
                 frame.pc += end;
 
-                let result = Rc::new(Value::List(Rc::new(iterator.result.clone())));
+                let result = Rc::new(Value::List(iterator.result.clone()));
                 self.stack.push(result);
 
                 return Ok(());
@@ -1948,14 +2067,20 @@ impl VM {
                     return Ok(());
                 }
                 Value::List(a) => {
-                    let mut result = (**a).clone();
+                    let mut result = (*a).clone();
 
                     match b.as_ref() {
                         Value::List(b) => {
-                            result.extend(b.as_ref().clone());
+                            for value in b.iter() {
+                                result.push(value.clone());
+                            }
                         }
                         Value::RangeList(b) => {
-                            result.extend(b.borrow().clone());
+                            b.borrow_mut().resolve();
+
+                            for value in b.borrow().values.iter() {
+                                result.push(value.clone());
+                            }
                         }
                         _ => unreachable!(),
                     }
@@ -1968,22 +2093,34 @@ impl VM {
                     let result = match b.as_ref() {
                         Value::List(b) => {
                             let mut result = Vec::new();
-                            result.extend(a.borrow().clone());
-                            result.extend(b.as_ref().clone());
+                            result.extend(a.borrow_mut().clone());
 
-                            Rc::new(result)
+                            for value in b.iter() {
+                                result.push(value.clone());
+                            }
+
+                            result
                         }
                         Value::RangeList(b) => {
                             let mut result = Vec::new();
-                            result.extend(a.borrow().clone());
-                            result.extend(b.borrow().clone());
 
-                            Rc::new(result)
+                            a.borrow_mut().resolve();
+                            b.borrow_mut().resolve();
+
+                            for value in a.borrow().values.iter() {
+                                result.push(value.clone());
+                            }
+
+                            for value in b.borrow().values.iter() {
+                                result.push(value.clone());
+                            }
+
+                            result
                         }
                         _ => unreachable!(),
                     };
 
-                    self.stack.push(Value::List(result).into());
+                    self.stack.push(Rc::new(Value::List(result)));
 
                     return Ok(());
                 }

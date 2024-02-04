@@ -25,36 +25,27 @@
 #       "eq" => minus (tail a) (tail b)
 #       "gt" => minus a (tail b)
 
-# const to -> 500
+# const to -> 700
 # const primes -> primes_to to
 # trace $"{{len primes}} primes to {{to}}: {{primes}}"
 
 
-# memoize f ->
-#   const memo -> newRecord {}
+memoize f ->
+  const memo -> mrecord_new {}
 
-#   !x -> if (has memo x) then
-#     readRecord memo x
-#   else
-#     writeRecord memo x (f x)
+  !x ->
+    const sx -> str x
 
-# fib_inner n -> if lt n 2 then
-#   n
-# else
-#   add (fib (sub n 1)) (fib (sub n 2))
+    if mrecord_has memo sx then
+      mrecord_read memo sx
+    else
+      mrecord_write memo sx (f x)
 
-# const fib -> memoize &fib_inner
+fib_inner n -> if lt n 2 then
+  n
+else
+  add (fib (sub n 1)) (fib (sub n 2))
 
-# trace (fib 35)
+const fib -> memoize &fib_inner
 
-
-const fruits -> newRecord {
-  apple: "red",
-  banana: "yellow",
-  grape: "purple"
-}
-
-# TODO: Fix parser so that `fruits @ "apple"` is parsed correctly
-trace ((fruits) @ "apple")
-trace ((fruits) @ "grape")
-trace ((fruits) @ "banana")
+trace (fib 6)
